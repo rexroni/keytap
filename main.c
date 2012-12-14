@@ -98,18 +98,22 @@ int proc_event(int out_fd, struct input_event ev){
 	send_uinput_vals(out_fd, EV_KEY, KEY_ESC, 0);
         caps_pressed = 0;
       }
-      else if(ev.value != 2 || ev.code != KEY_CAPSLOCK){
-	send_uinput_vals(out_fd, EV_KEY, KEY_CAPSLOCK, 1);
-	send_input_event(out_fd, ev);
+      else if(ev.value == 2 && ev.code == KEY_CAPSLOCK){
+        send_uinput_vals(out_fd, EV_KEY, KEY_CAPSLOCK, 1);
+        caps_pressed = 0;
+      }
+      else{
+        send_uinput_vals(out_fd, EV_KEY, KEY_CAPSLOCK, 1);
+        send_input_event(out_fd, ev);
         caps_pressed = 0;
       }
     }
     else{
       if(ev.value == 1 && ev.code == KEY_CAPSLOCK){
-	caps_pressed = 1;
+        caps_pressed = 1;
       }
       else{
-	send_input_event(out_fd, ev);
+        send_input_event(out_fd, ev);
       }
     }
   }
