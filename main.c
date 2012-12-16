@@ -8,8 +8,14 @@
 #include <linux/uinput.h>
 #include <errno.h>
 
+#if 0
+#define DEBUG(...) printf(__VA_ARGS__)
+#else
+#define DEBUG(...)
+#endif
+
 int send_input_event(int fd, struct input_event ev){
-  printf("out: %d %d %d\n", ev.type, ev.code, ev.value);
+  DEBUG("out: %d %d %d\n", ev.type, ev.code, ev.value);
   return write(fd, &ev, sizeof(ev));
 }
 
@@ -17,7 +23,7 @@ int send_uinput_vals(int fd, int type, int code, int value){
   struct input_event ev;
   ev.type = type;
   ev.code = code;
-  ev.value = value; 
+  ev.value = value;
   return send_input_event(fd, ev);
 }
 
@@ -70,11 +76,11 @@ int open_input(){
     }
 
     ioctl(input, EVIOCGNAME(sizeof(buf)), buf);
-    printf("%s\n", buf);
+    DEBUG("%s\n", buf);
     if(strstr(buf, "keyboard"))
       break;
   }
-  printf("reading from %s (%s)\n", dev, buf);
+  DEBUG("reading from %s (%s)\n", dev, buf);
 
   ret = ioctl(input, EVIOCGRAB, 1);
   if(ret < 0){
@@ -88,20 +94,23 @@ int open_input(){
 
 int proc_event(int out_fd, struct input_event ev){
   static int caps_pressed = 0;
-  printf("in: %d %d %d\n", ev.type, ev.code, ev.value);
+  DEBUG("in: %d %d %d\n", ev.type, ev.code, ev.value);
   if(ev.type == EV_SYN)
     send_input_event(out_fd, ev);
   else if(ev.type == EV_KEY){
     if(caps_pressed){
+      // CAPS released -> emit ESC press+release
       if(ev.value == 0 && ev.code == KEY_CAPSLOCK){
 	send_uinput_vals(out_fd, EV_KEY, KEY_ESC, 1);
 	send_uinput_vals(out_fd, EV_KEY, KEY_ESC, 0);
         caps_pressed = 0;
       }
+      // CAPS repeated -> revert to emit CAPS press
       else if(ev.value == 2 && ev.code == KEY_CAPSLOCK){
         send_uinput_vals(out_fd, EV_KEY, KEY_CAPSLOCK, 1);
         caps_pressed = 0;
       }
+      // other key pressed -> emit CAPS press and other key
       else{
         send_uinput_vals(out_fd, EV_KEY, KEY_CAPSLOCK, 1);
         send_input_event(out_fd, ev);
@@ -126,7 +135,14 @@ int main(){
   int in_fd = open_input();
   int out_fd = open_output();
 
-  printf("%d %d\n", in_fd, out_fd);
+  if(in_fd < 0){
+    fputs("couldn't open input", stderr);
+    return 1;
+  }
+  if(out_fd < 0){
+    fputs("couldn't open output", stderr);
+    return 1;
+  }
 
   struct input_event ev;
 
