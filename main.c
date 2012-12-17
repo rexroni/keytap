@@ -92,40 +92,59 @@ int open_input(){
   return input;
 }
 
+#define MAX_CODE 256
+static int keymaps[MAX_CODE];
+
+void init_keymaps(int maps[][2], int nmaps){
+  memset(keymaps, 0, sizeof(keymaps));
+
+  int i;
+  for(i = 0; i < nmaps; i++)
+    if(maps[i][0] > 0 && maps[i][0] < MAX_CODE)
+      keymaps[maps[i][0]] = maps[i][1];
+}
+
 int proc_event(int out_fd, struct input_event ev){
-  static int caps_pressed = 0;
+  static int last_key = 0;
   DEBUG("in: %d %d %d\n", ev.type, ev.code, ev.value);
   if(ev.type == EV_SYN)
     send_input_event(out_fd, ev);
   else if(ev.type == EV_KEY){
-    if(caps_pressed){
-      // CAPS released -> emit ESC press+release
-      if(ev.value == 0 && ev.code == KEY_CAPSLOCK){
-	send_uinput_vals(out_fd, EV_KEY, KEY_ESC, 1);
-	send_uinput_vals(out_fd, EV_KEY, KEY_ESC, 0);
-        caps_pressed = 0;
+    if(last_key){
+      // last key released -> emit mapped key press+release
+      if(ev.value == 0 && ev.code == last_key){
+	send_uinput_vals(out_fd, EV_KEY, keymaps[last_key], 1);
+	send_uinput_vals(out_fd, EV_KEY, keymaps[last_key], 0);
+        last_key = 0;
       }
-      // CAPS repeated -> revert to emit CAPS press
-      else if(ev.value == 2 && ev.code == KEY_CAPSLOCK){
-        send_uinput_vals(out_fd, EV_KEY, KEY_CAPSLOCK, 1);
-        caps_pressed = 0;
+      // last key repeated -> revert to emit normal press
+      else if(ev.value == 2 && ev.code == last_key){
+        send_uinput_vals(out_fd, EV_KEY, last_key, 1);
+        last_key = 0;
       }
-      // other key pressed -> emit CAPS press and other key
+      // other interesting key pressed -> emit original key and watch for other key
+      else if(ev.value == 1 && ev.code < MAX_CODE && keymaps[ev.code]){
+        send_uinput_vals(out_fd, EV_KEY, last_key, 1);
+        last_key = ev.code;
+      }
+      // other key pressed -> emit original key press and other key
       else{
-        send_uinput_vals(out_fd, EV_KEY, KEY_CAPSLOCK, 1);
+        send_uinput_vals(out_fd, EV_KEY, last_key, 1);
         send_input_event(out_fd, ev);
-        caps_pressed = 0;
+        last_key = 0;
       }
     }
     else{
-      if(ev.value == 1 && ev.code == KEY_CAPSLOCK){
-        caps_pressed = 1;
+      if(ev.value == 1 && ev.code < MAX_CODE && keymaps[ev.code]){
+        last_key = ev.code;
       }
       else{
         send_input_event(out_fd, ev);
       }
     }
   }
+
+  return 0;
 }
 
 int main(){
@@ -145,6 +164,11 @@ int main(){
   }
 
   struct input_event ev;
+
+  int maps[][2] = {{KEY_CAPSLOCK, KEY_ESC},
+                   {KEY_RIGHTSHIFT, KEY_BACKSPACE}};
+
+  init_keymaps(maps, 2);
 
   i = 0;
   while(1){
