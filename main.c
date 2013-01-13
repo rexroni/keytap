@@ -1,12 +1,16 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/select.h>
 #include <sys/stat.h>
-#include <fcntl.h>
+#include <sys/types.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #if 0
 #define DEBUG(...) printf(__VA_ARGS__)
@@ -55,41 +59,50 @@ int open_output(){
   return fd;
 }
 
-int open_input(){
+int *open_inputs(int *n_kbs){
+  static int MAX_KBS = 16;
+  int *res = (int *)malloc(MAX_KBS * sizeof(int));
+  int n = 0;
+
   char dev[256];
   char buf[256];
   int input;
-  int i, ret;
-  for(i = 0;; i++){
-    sprintf(dev, "/dev/input/event%d", i);
+  int ret;
+
+  char devdir[] = "/dev/input";
+
+  DIR *d = opendir(devdir);
+  struct dirent *ent;
+  while((ent = readdir(d))){
+    if(ent->d_name != strstr(ent->d_name, "event"))
+      continue;
+
+    sprintf(dev, "%s/%s", devdir, ent->d_name);
+
     input = open(dev, O_RDWR);
     if(input < 0){
-      if(errno == ENOENT){
-	puts("ran out of devices");
-	return -1;
-      }
-      else{
-	printf("%s: %s\n", dev, strerror(errno));
-	close(input);
-	continue;
-      }
+      fprintf(stderr, "%s: %s\n", dev, strerror(errno));
+      close(input);
+      continue;
     }
 
     ioctl(input, EVIOCGNAME(sizeof(buf)), buf);
-    DEBUG("%s\n", buf);
-    if(strstr(buf, "keyboard"))
-      break;
+    //DEBUG("%s\n", buf);
+    if(n < MAX_KBS && strcasestr(buf, "keyboard")){
+      ret = ioctl(input, EVIOCGRAB, 1);
+      if(ret < 0){
+        close(input);
+        printf("%s: %s\n", dev, strerror(errno));
+      }
+      else{
+        res[(n)++] = input;
+        DEBUG("reading from %s (%s)\n", dev, buf);
+      }
+    }
   }
-  DEBUG("reading from %s (%s)\n", dev, buf);
 
-  ret = ioctl(input, EVIOCGRAB, 1);
-  if(ret < 0){
-    close(input);
-    puts(strerror(errno));
-    return -1;
-  }
-
-  return input;
+  *n_kbs = n;
+  return res;
 }
 
 #define MAX_CODE 256
@@ -148,14 +161,15 @@ int proc_event(int out_fd, struct input_event ev){
 }
 
 int main(){
-  sleep(1);
+  usleep(250000);
   int i;
   int ret;
-  int in_fd = open_input();
+  int n_kbs = 0;
+  int *in_fds = open_inputs(&n_kbs);
   int out_fd = open_output();
 
-  if(in_fd < 0){
-    fputs("couldn't open input", stderr);
+  if(n_kbs == 0){
+    fputs("couldn't open any inputs", stderr);
     return 1;
   }
   if(out_fd < 0){
@@ -170,9 +184,22 @@ int main(){
 
   init_keymaps(maps, 2);
 
-  i = 0;
+  int max_fd = 0;
+  for(i = 0; i < n_kbs; i++)
+    if(in_fds[i] > max_fd) max_fd = in_fds[i];
+
+  fd_set fds;
   while(1){
-    ret = read(in_fd, &ev, sizeof(struct input_event));
-    proc_event(out_fd, ev);
+    FD_ZERO(&fds);
+    for(i = 0; i < n_kbs; i++)
+      FD_SET(in_fds[i], &fds);
+    select(1+max_fd, &fds, NULL, NULL, NULL);
+
+    for(i = 0; i < n_kbs; i++){
+      if(FD_ISSET(in_fds[i], &fds)){
+        ret = read(in_fds[i], &ev, sizeof(struct input_event));
+        proc_event(out_fd, ev);
+      }
+    }
   }
 }

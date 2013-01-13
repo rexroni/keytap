@@ -1,2 +1,2 @@
 keymap: main.c
-	gcc main.c -o keymap -Wall
+	gcc main.c -o keymap -Wall -ggdb
