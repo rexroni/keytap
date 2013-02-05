@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/inotify.h>
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -59,9 +60,9 @@ int open_output(){
   return fd;
 }
 
-int *open_inputs(int *n_kbs){
-  static int MAX_KBS = 16;
-  int *res = (int *)malloc(MAX_KBS * sizeof(int));
+#define MAX_KBS 16
+
+int open_inputs(int *res){
   int n = 0;
 
   char dev[256];
@@ -95,14 +96,13 @@ int *open_inputs(int *n_kbs){
         printf("%s: %s\n", dev, strerror(errno));
       }
       else{
-        res[(n)++] = input;
+        res[n++] = input;
         DEBUG("reading from %s (%s)\n", dev, buf);
       }
     }
   }
 
-  *n_kbs = n;
-  return res;
+  return n;
 }
 
 #define MAX_CODE 256
@@ -160,13 +160,22 @@ int proc_event(int out_fd, struct input_event ev){
   return 0;
 }
 
+int open_inotify(){
+  int inot = inotify_init();
+  inotify_add_watch(inot, "/dev/input",
+                    IN_CREATE | IN_DELETE);
+
+  return inot;
+}
+
 int main(){
   usleep(250000);
-  int i;
-  int ret;
-  int n_kbs = 0;
-  int *in_fds = open_inputs(&n_kbs);
+  int i, ret;
+  int in_fds[MAX_KBS];
+  int n_kbs = open_inputs(in_fds);
   int out_fd = open_output();
+  int inot = open_inotify();
+  char buf[16384];
 
   if(n_kbs == 0){
     fputs("couldn't open any inputs", stderr);
@@ -177,29 +186,40 @@ int main(){
     return 1;
   }
 
-  struct input_event ev;
-
   int maps[][2] = {{KEY_CAPSLOCK, KEY_ESC},
                    {KEY_RIGHTSHIFT, KEY_BACKSPACE}};
 
   init_keymaps(maps, 2);
 
-  int max_fd = 0;
-  for(i = 0; i < n_kbs; i++)
-    if(in_fds[i] > max_fd) max_fd = in_fds[i];
-
   fd_set fds;
   while(1){
+    int max_fd = inot;
+    for(i = 0; i < n_kbs; i++)
+      if(in_fds[i] > max_fd)
+        max_fd = in_fds[i];
+
     FD_ZERO(&fds);
+    FD_SET(inot, &fds);
     for(i = 0; i < n_kbs; i++)
       FD_SET(in_fds[i], &fds);
     select(1+max_fd, &fds, NULL, NULL, NULL);
 
     for(i = 0; i < n_kbs; i++){
       if(FD_ISSET(in_fds[i], &fds)){
+        struct input_event ev;
         ret = read(in_fds[i], &ev, sizeof(struct input_event));
-        proc_event(out_fd, ev);
+        if(ret > 0)
+          proc_event(out_fd, ev);
       }
+    }
+
+    if(FD_ISSET(inot, &fds)){
+      DEBUG("reloading inputs\n");
+      read(inot, buf, sizeof(buf));
+      for(i = 0; i < n_kbs; i++){
+        close(in_fds[i]);
+      }
+      n_kbs = open_inputs(in_fds);
     }
   }
 }
