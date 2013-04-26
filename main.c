@@ -13,14 +13,35 @@
 #include <errno.h>
 #include <fcntl.h>
 
-#if 0
+#ifndef NDEBUG
 #define DEBUG(...) printf(__VA_ARGS__)
+
+char *type_str(int t){
+  static char buf[256];
+
+  switch(t){
+  case EV_SYN: return "EV_SYN";
+  case EV_KEY: return "EV_KEY";
+  case EV_MSC: return "EV_MSC";
+  default:
+    sprintf(buf, "(type %d)", t);
+    return buf;
+  }
+}
+
+void print_event(char *tag, struct input_event ev){
+  if(ev.type || ev.code || ev.value)
+    printf("%s: %s %d %d\n", tag, type_str(ev.type), ev.code, ev.value);
+
+}
+
 #else
 #define DEBUG(...)
+void print_event(char *tag, struct input_event ev){}
 #endif
 
 int send_input_event(int fd, struct input_event ev){
-  DEBUG("out: %d %d %d\n", ev.type, ev.code, ev.value);
+  print_event("out", ev);
   return write(fd, &ev, sizeof(ev));
 }
 
@@ -48,10 +69,10 @@ int open_output(){
 
   memset(&uidev, 0, sizeof(uidev));
 
-  snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "uinput-sample");
+  snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "keymap");
   uidev.id.bustype = BUS_USB;
-  uidev.id.vendor  = 0x1234;
-  uidev.id.product = 0xfedc;
+  uidev.id.vendor  = 0x1111;
+  uidev.id.product = 0x0001;
   uidev.id.version = 1;
 
   ret = write(fd, &uidev, sizeof(uidev));
@@ -119,7 +140,7 @@ void init_keymaps(int maps[][2], int nmaps){
 
 int proc_event(int out_fd, struct input_event ev){
   static int last_key = 0;
-  DEBUG("in: %d %d %d\n", ev.type, ev.code, ev.value);
+  print_event("in", ev);
   if(ev.type == EV_SYN)
     send_input_event(out_fd, ev);
   else if(ev.type == EV_KEY){
@@ -187,9 +208,14 @@ int main(){
   }
 
   int maps[][2] = {{KEY_CAPSLOCK, KEY_ESC},
-                   {KEY_RIGHTSHIFT, KEY_BACKSPACE}};
+                   {KEY_RIGHTSHIFT, KEY_BACKSPACE},
+                   {KEY_LEFTALT, KEY_MINUS},
+                   {KEY_RIGHTALT, KEY_EQUAL},
+                   {KEY_LEFTSHIFT, KEY_MUTE},
+                   {KEY_LEFTMETA, KEY_VOLUMEDOWN},
+                   {KEY_COMPOSE, KEY_VOLUMEUP}};
 
-  init_keymaps(maps, 2);
+  init_keymaps(maps, 7);
 
   fd_set fds;
   while(1){
