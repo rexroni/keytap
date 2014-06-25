@@ -16,6 +16,8 @@
 #ifndef NDEBUG
 #define DEBUG(...) printf(__VA_ARGS__)
 
+#include "names.h"
+
 char *type_str(int t){
   static char buf[256];
 
@@ -31,8 +33,7 @@ char *type_str(int t){
 
 void print_event(char *tag, struct input_event ev){
   if(ev.type || ev.code || ev.value)
-    printf("%s: %s %d %d\n", tag, type_str(ev.type), ev.code, ev.value);
-
+    printf("%4s: %s %15s %6s\n", tag, type_str(ev.type), key_names[ev.code], val_names[ev.value]);
 }
 
 #else
