@@ -1,5 +1,5 @@
 keymap: main.c
-	gcc -DNDEBUG main.c -o keymap -Wall
+	gcc -O2 -DNDEBUG main.c -o keymap -Wall
 
 debug: main.c
 	gcc main.c -o keymap -Wall -ggdb

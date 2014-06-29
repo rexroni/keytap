@@ -220,15 +220,14 @@ int main(){
 
   fd_set fds;
   while(1){
-    int max_fd = inot;
-    for(i = 0; i < n_kbs; i++)
-      if(in_fds[i] > max_fd)
-        max_fd = in_fds[i];
-
     FD_ZERO(&fds);
     FD_SET(inot, &fds);
-    for(i = 0; i < n_kbs; i++)
+    int max_fd = inot;
+    for(i = 0; i < n_kbs; i++){
       FD_SET(in_fds[i], &fds);
+      if(in_fds[i] > max_fd)
+        max_fd = in_fds[i];
+    }
     select(1+max_fd, &fds, NULL, NULL, NULL);
 
     for(i = 0; i < n_kbs; i++){
