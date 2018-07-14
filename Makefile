@@ -1,8 +1,10 @@
+.PHONY: debug
+
 keytap: main.c
-	gcc -O2 -DNDEBUG main.c -o keytap -Wall
+	gcc -Wall -Wno-unused-result -O2 -DNDEBUG main.c -o keytap
 
 debug: main.c
-	gcc main.c -o keytap -Wall -ggdb
+	gcc -Wall -ggdb main.c -o keytap
 
 install: keytap
 	sudo chown root:root keytap

@@ -63,14 +63,14 @@ int send_uinput_vals(int fd, int type, int code, int value) {
 }
 
 int open_output() {
-  int i, ret;
+  int i;
   int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
   if (fd < 0) {
     return -1;
   }
 
-  ret = ioctl(fd, UI_SET_EVBIT, EV_KEY);
-  ret = ioctl(fd, UI_SET_EVBIT, EV_SYN);
+  ioctl(fd, UI_SET_EVBIT, EV_KEY);
+  ioctl(fd, UI_SET_EVBIT, EV_SYN);
   for (i = 0; i < 256; i++)
     ioctl(fd, UI_SET_KEYBIT, i);
 
@@ -84,8 +84,8 @@ int open_output() {
   uidev.id.product = 0x0001;
   uidev.id.version = 1;
 
-  ret = write(fd, &uidev, sizeof(uidev));
-  ret = ioctl(fd, UI_DEV_CREATE);
+  write(fd, &uidev, sizeof(uidev));
+  ioctl(fd, UI_DEV_CREATE);
 
   return fd;
 }
@@ -95,7 +95,7 @@ int open_output() {
 int open_inputs(int *res) {
   int n = 0;
 
-  char dev[256];
+  char dev[512];
   char buf[256];
   int input;
   int ret;
@@ -108,7 +108,7 @@ int open_inputs(int *res) {
     if (ent->d_name != strstr(ent->d_name, "event"))
       continue;
 
-    sprintf(dev, "%s/%s", devdir, ent->d_name);
+    snprintf(dev, sizeof(dev), "%s/%s", devdir, ent->d_name);
 
     input = open(dev, O_RDWR);
     if (input < 0) {
@@ -137,11 +137,11 @@ int open_inputs(int *res) {
 #define MAX_CODE 256
 static int keymaps[MAX_CODE];
 
-void init_keymaps(int maps[][2], int nmaps) {
+void init_keymaps(int maps[][2]) {
   memset(keymaps, 0, sizeof(keymaps));
 
   int i;
-  for (i = 0; i < nmaps; i++)
+  for (i = 0; maps[i][0]; i++)
     if (maps[i][0] > 0 && maps[i][0] < MAX_CODE)
       keymaps[maps[i][0]] = maps[i][1];
 }
@@ -216,9 +216,9 @@ int main() {
   int maps[][2] = {{KEY_CAPSLOCK, KEY_ESC},   {KEY_RIGHTSHIFT, KEY_BACKSPACE},
                    {KEY_LEFTALT, KEY_MINUS},  {KEY_RIGHTALT, KEY_EQUAL},
                    {KEY_LEFTSHIFT, KEY_MUTE}, {KEY_LEFTMETA, KEY_VOLUMEDOWN},
-                   {KEY_SYSRQ, KEY_VOLUMEUP}};
+                   {KEY_SYSRQ, KEY_VOLUMEUP}, {0, 0}};
 
-  init_keymaps(maps, 7);
+  init_keymaps(maps);
 
   fd_set fds;
   while (1) {
