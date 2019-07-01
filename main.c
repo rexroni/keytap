@@ -213,10 +213,14 @@ int main() {
     return 1;
   }
 
-  int maps[][2] = {{KEY_CAPSLOCK, KEY_ESC},   {KEY_RIGHTSHIFT, KEY_BACKSPACE},
-                   {KEY_LEFTALT, KEY_MINUS},  {KEY_RIGHTALT, KEY_EQUAL},
-                   {KEY_LEFTSHIFT, KEY_MUTE}, {KEY_LEFTMETA, KEY_VOLUMEDOWN},
-                   {KEY_SYSRQ, KEY_VOLUMEUP}, {0, 0}};
+  int maps[][2] = {{KEY_CAPSLOCK, KEY_ESC},
+                   {KEY_RIGHTSHIFT, KEY_BACKSPACE},
+                   {KEY_LEFTALT, KEY_MINUS},
+                   {KEY_RIGHTALT, KEY_EQUAL},
+                   {KEY_LEFTSHIFT, KEY_MUTE},
+                   {KEY_LEFTMETA, KEY_VOLUMEDOWN},
+                   {KEY_COMPOSE, KEY_VOLUMEUP},
+                   {0, 0}};
 
   init_keymaps(maps);
 
