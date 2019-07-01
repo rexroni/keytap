@@ -10,3 +10,6 @@ install: keytap
 	sudo chown root:root keytap
 	sudo chmod 4755 keytap
 	sudo cp -p keytap /usr/local/sbin/
+
+install-systemd: install
+	sudo cp -p keytap.service /etc/systemd/system/

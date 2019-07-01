@@ -1,0 +1,8 @@
+[Unit]
+Description=keytap
+
+[Service]
+ExecStart=/usr/local/sbin/keytap
+
+[Install]
+WantedBy=default.target
