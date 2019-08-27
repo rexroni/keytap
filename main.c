@@ -13,6 +13,9 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <stdbool.h>
+#include <time.h>
+
 #ifndef NDEBUG
 #define DEBUG(...) printf(__VA_ARGS__)
 
@@ -135,58 +138,6 @@ int open_inputs(int *res) {
 }
 
 #define MAX_CODE 256
-static int keymaps[MAX_CODE];
-
-void init_keymaps(int maps[][2]) {
-  memset(keymaps, 0, sizeof(keymaps));
-
-  int i;
-  for (i = 0; maps[i][0]; i++)
-    if (maps[i][0] > 0 && maps[i][0] < MAX_CODE)
-      keymaps[maps[i][0]] = maps[i][1];
-}
-
-int proc_event(int out_fd, struct input_event ev) {
-  static int last_key = 0;
-  print_event("in", ev);
-  if (ev.type == EV_SYN)
-    send_input_event(out_fd, ev);
-  else if (ev.type == EV_KEY) {
-    if (last_key) {
-      // last key released -> emit mapped key press+release
-      if (ev.value == 0 && ev.code == last_key) {
-        send_uinput_vals(out_fd, EV_KEY, keymaps[last_key], 1);
-        send_uinput_vals(out_fd, EV_KEY, keymaps[last_key], 0);
-        last_key = 0;
-      }
-      // last key repeated -> revert to emit normal press
-      else if (ev.value == 2 && ev.code == last_key) {
-        send_uinput_vals(out_fd, EV_KEY, last_key, 1);
-        last_key = 0;
-      }
-      // other interesting key pressed -> emit original key and watch for other
-      // key
-      else if (ev.value == 1 && ev.code < MAX_CODE && keymaps[ev.code]) {
-        send_uinput_vals(out_fd, EV_KEY, last_key, 1);
-        last_key = ev.code;
-      }
-      // other key pressed -> emit original key press and other key
-      else {
-        send_uinput_vals(out_fd, EV_KEY, last_key, 1);
-        send_input_event(out_fd, ev);
-        last_key = 0;
-      }
-    } else {
-      if (ev.value == 1 && ev.code < MAX_CODE && keymaps[ev.code]) {
-        last_key = ev.code;
-      } else {
-        send_input_event(out_fd, ev);
-      }
-    }
-  }
-
-  return 0;
-}
 
 int open_inotify() {
   int inot = inotify_init();
@@ -195,8 +146,276 @@ int open_inotify() {
   return inot;
 }
 
+// alternate keymap, based on the "f" key, keys not present are passed through.
+int fmap[][2] = {
+    {KEY_H, KEY_LEFT},
+    {KEY_J, KEY_DOWN},
+    {KEY_K, KEY_UP},
+    {KEY_L, KEY_RIGHT},
+
+    {KEY_U, KEY_KPLEFTPAREN},
+    {KEY_I, KEY_KPRIGHTPAREN},
+    {KEY_O, KEY_LEFTBRACE},
+    {KEY_P, KEY_RIGHTBRACE},
+
+    {KEY_N, KEY_GRAVE},
+    {KEY_M, KEY_MINUS},
+    {KEY_COMMA, KEY_EQUAL},
+
+    {KEY_1, KEY_F1},
+    {KEY_2, KEY_F2},
+    {KEY_3, KEY_F3},
+    {KEY_4, KEY_F4},
+    {KEY_5, KEY_F5},
+    {KEY_6, KEY_F6},
+    {KEY_7, KEY_F7},
+    {KEY_8, KEY_F8},
+    {KEY_9, KEY_F9},
+    {KEY_0, KEY_F10},
+    {KEY_MINUS, KEY_F11},
+    {KEY_BACKSLASH, KEY_F12},
+};
+
+/* if you find one of these values in the release_map, then that means
+   "instead of sending a keyrelease event, just stop using this keymap" */
+enum keymap {
+    KEYMAP_NONE = 0,
+    KEYMAP_F = 256,
+};
+
+// the maximum number of unresolved events before we start dropping events
+#define URMAX 32
+
+// the state of the resolver thread, which decides how to interpret keys
+struct resolver {
+    int *out_fd;
+    /* key events received, but we haven't decided how to treat them.  No key
+       can be resolved until all of the keys before it are resolved. */
+    struct input_event unresolved[URMAX];
+    size_t ur_len;
+    size_t ur_start;
+    /* when we decide how to treat a keypress, we have to remember what key to
+       release */
+    int release_map[256];
+    /* If we have an unresolvable event, we mark the time that it will become
+       resolvable by timeout */
+    struct timeval resolvable_time;
+    bool use_resolvable_time;
+    enum keymap current_keymap;
+};
+
+// helper function for difference of two struct timespec's (computes "a - b")
+long msec_diff(struct timeval a, struct timeval b){
+    long diff = (a.tv_usec / 1000) - (b.tv_usec / 1000);
+    return diff + (a.tv_sec - b.tv_sec) * 1000;
+}
+
+struct timeval msec_after(struct timeval tv, long millis){
+    // handle integer seconds
+    tv.tv_sec += millis / 1000;
+    // calculate msec
+    long msec = (millis % 1000) + (tv.tv_usec / 1000);
+    // handle msec overflow
+    tv.tv_sec += msec > 1000;
+    tv.tv_usec = (tv.tv_usec % 1000) + (msec % 1000) * 1000;
+    return tv;
+}
+
+// returns the timeout to be used for select(), which is either out or NULL
+struct timeval *select_timeout(struct resolver *r, struct timeval *out){
+    // don't pass a timeout if none is valid.
+    if(!r->use_resolvable_time){
+        return NULL;
+    }
+
+    struct timespec now_timespec;
+    clock_gettime(CLOCK_REALTIME, &now_timespec);
+    struct timeval now;
+    TIMESPEC_TO_TIMEVAL(&now, &now_timespec);
+
+    long mdiff = msec_diff(r->resolvable_time, now);
+    if(mdiff < 0){
+        // somehow the timeout has expired, zero length timeout
+        out->tv_sec = 0;
+        out->tv_usec = 0;
+    }else{
+        out->tv_sec = mdiff / 1000;
+        out->tv_usec = (mdiff % 1000) * 1000;
+    }
+    return out;
+}
+
+/* Given a pressed key X, check unresolved events to deterimine which is first:
+     - X has timed out (X is a modifier)
+     - X has been released (X is not a modifier)
+     - another key has been pressed and released (X is a modifier)
+     - actually, neither has happened yet (resolvable time will be set) */
+enum waveform {
+    WAVEFORM_TIMEOUT,
+    WAVEFORM_MAIN_KEY_RELEASED,
+    WAVEFORM_ANOTHER_KEY,
+    WAVEFORM_NONE_YET,
+};
+enum waveform check_waveform(const struct resolver *r, struct input_event ev){
+    struct timespec now_timespec;
+    clock_gettime(CLOCK_REALTIME, &now_timespec);
+    struct timeval now;
+    TIMESPEC_TO_TIMEVAL(&now, &now_timespec);
+
+    // is the keypress old enough that we know it is a modifier?
+    if(msec_diff(now, ev.time) > 200){
+        return WAVEFORM_TIMEOUT;
+    }
+
+    int keys_pressed[256] = {0};
+    for(size_t i = 1; i < r->ur_len; i++){
+        struct input_event ev2 = r->unresolved[(r->ur_start + i) % URMAX];
+        if(ev2.value == 0 && ev2.code == ev.code){
+            // the main key was released first, it's just its normal self
+            return WAVEFORM_MAIN_KEY_RELEASED;
+        }else if(ev2.value == 1 && ev2.code < MAX_CODE){
+            keys_pressed[ev2.code] = 1;
+        }else if(ev2.value == 0 && ev2.code < MAX_CODE && keys_pressed[ev2.code]){
+            // some other key was pressed and released, main key is a modifier
+            return WAVEFORM_ANOTHER_KEY;
+        }
+    }
+
+    return WAVEFORM_NONE_YET;
+}
+
+
+/* helper function which tries to resolve the oldest key event.  Returns false
+   if it deems the event unresolvable, setting the resolver.resolve_time as
+   appropriate. */
+bool resolve(struct resolver *r, int *fmap_exp){
+    if(r->ur_len == 0){
+        return false;
+    }
+
+    // grab the oldest event
+    struct input_event ev = r->unresolved[r->ur_start % URMAX];
+
+    bool resolved = false;
+    r->use_resolvable_time = false;
+
+    if(ev.type == EV_KEY){
+        // key released
+        if(ev.value == 0){
+            /* make the code look like whatever we mapped it to when we
+               resolved the initial keypress */
+            if(ev.code < MAX_CODE){
+                ev.code = r->release_map[ev.code];
+            }
+            switch(ev.code){
+                case KEYMAP_F:
+                    // disable KEYMAP_F if it is the current one
+                    if(r->current_keymap == KEYMAP_F)
+                        r->current_keymap = KEYMAP_NONE;
+                    break;
+                default:
+                    send_input_event(*r->out_fd, ev);
+            }
+            resolved = true;
+        }
+        // key pressed
+        else if(ev.value == 1){
+            // F key changes the keymap
+            if(ev.code == KEY_F){
+                enum waveform waveform = check_waveform(r, ev);
+                switch(waveform){
+                    case WAVEFORM_MAIN_KEY_RELEASED:
+                        resolved = true;
+                        // a normal F
+                        send_input_event(*r->out_fd, ev);
+                        r->release_map[KEY_F] = KEY_F;
+                        break;
+                    case WAVEFORM_TIMEOUT:
+                    case WAVEFORM_ANOTHER_KEY:
+                        resolved = true;
+                        // don't emit F; switch keymaps
+                        r->current_keymap = KEYMAP_F;
+                        // when "F" is released, disable the keymap
+                        r->release_map[KEY_F] = KEYMAP_F;
+                        break;
+                    case WAVEFORM_NONE_YET:
+                        r->resolvable_time = msec_after(ev.time, 200);
+                        r->use_resolvable_time=true;
+                        break;
+                }
+            // D key behaves like a meta key
+            }else if(ev.code == KEY_D){
+                enum waveform waveform = check_waveform(r, ev);
+                switch(waveform){
+                    case WAVEFORM_MAIN_KEY_RELEASED:
+                        resolved = true;
+                        // a normal D
+                        send_input_event(*r->out_fd, ev);
+                        r->release_map[KEY_D] = KEY_D;
+                        break;
+                    case WAVEFORM_TIMEOUT:
+                    case WAVEFORM_ANOTHER_KEY:
+                        ev.code = KEY_LEFTMETA;
+                        // when "D" is released, release the meta key
+                        r->release_map[KEY_D] = KEY_LEFTMETA;
+                        send_input_event(*r->out_fd, ev);
+                        resolved = true;
+                        break;
+                    case WAVEFORM_NONE_YET:
+                        r->resolvable_time = msec_after(ev.time, 200);
+                        r->use_resolvable_time=true;
+                        break;
+                }
+            }else{
+                int original_code = ev.code;
+                // normal key was pressed
+                switch(r->current_keymap){
+                    case KEYMAP_NONE: break;
+                    case KEYMAP_F: ev.code = fmap_exp[original_code]; break;
+                }
+                // remember how to release the key
+                if(original_code < MAX_CODE){
+                    r->release_map[original_code] = ev.code;
+                }
+                send_input_event(*r->out_fd, ev);
+                resolved = true;
+            }
+        }
+        // key repeated
+        else if(ev.value == 2){
+            /* make the code look like whatever we mapped it to when we
+               resolved the initial keypress */
+            if(ev.code < MAX_CODE){
+                ev.code = r->release_map[ev.code];
+            }
+            switch(ev.code){
+                case KEYMAP_F:
+                    // ignore repeats of keymap modifiers
+                    break;
+                default:
+                    send_input_event(*r->out_fd, ev);
+            }
+            resolved = true;
+        }
+    }else{
+        // non EV_KEY events are passed through unchanged
+        send_input_event(*r->out_fd, ev);
+        resolved = true;
+    }
+
+    if(resolved){
+        // one less element
+        r->ur_len--;
+        // but we start one later
+        r->ur_start = (r->ur_start + 1) % URMAX;
+    }
+    return resolved;
+}
+
+
 int main() {
   usleep(250000);
+
   int i, ret;
   int in_fds[MAX_KBS];
   int n_kbs = open_inputs(in_fds);
@@ -213,16 +432,26 @@ int main() {
     return 1;
   }
 
-  int maps[][2] = {{KEY_CAPSLOCK, KEY_ESC},
-                   {KEY_RIGHTSHIFT, KEY_BACKSPACE},
-                   {KEY_LEFTALT, KEY_MINUS},
-                   {KEY_RIGHTALT, KEY_EQUAL},
-                   {KEY_LEFTSHIFT, KEY_MUTE},
-                   {KEY_LEFTMETA, KEY_VOLUMEDOWN},
-                   {KEY_COMPOSE, KEY_VOLUMEUP},
-                   {0, 0}};
+  // the main thread will read from the device
 
-  init_keymaps(maps);
+  // have a thread responsible for resolving keypresses
+  struct resolver r = {.out_fd=&out_fd};
+
+  // expand the fmap
+  int fmap_exp[256] = {0};
+  for(int i = 0; i < sizeof(fmap_exp) / sizeof(*fmap_exp); i++)
+    fmap_exp[i] = i;
+  for(size_t i = 0; i < sizeof(fmap) / sizeof(*fmap); i++)
+    fmap_exp[fmap[i][0]] = fmap[i][1];
+
+  //int maps[][2] = {{KEY_CAPSLOCK, KEY_ESC},
+  //                 {KEY_RIGHTSHIFT, KEY_BACKSPACE},
+  //                 {KEY_LEFTALT, KEY_MINUS},
+  //                 {KEY_RIGHTALT, KEY_EQUAL},
+  //                 {KEY_LEFTSHIFT, KEY_MUTE},
+  //                 {KEY_LEFTMETA, KEY_VOLUMEDOWN},
+  //                 {KEY_COMPOSE, KEY_VOLUMEUP},
+  //                 {0, 0}};
 
   fd_set fds;
   while (1) {
@@ -234,14 +463,26 @@ int main() {
       if (in_fds[i] > max_fd)
         max_fd = in_fds[i];
     }
+
+    struct timeval timeout;
     select(1 + max_fd, &fds, NULL, NULL, NULL);
+
+    // if the timeout was reached, try to resolve immediately
+    if(timeout.tv_sec == 0 && timeout.tv_usec == 0){
+        while(resolve(&r, fmap_exp));
+    }
 
     for (i = 0; i < n_kbs; i++) {
       if (FD_ISSET(in_fds[i], &fds)) {
         struct input_event ev;
         ret = read(in_fds[i], &ev, sizeof(struct input_event));
-        if (ret > 0)
-          proc_event(out_fd, ev);
+        if (ret > 0){
+          // add event to unresolved, or drop it if there isn't space for it
+          if(r.ur_len < URMAX){
+            r.unresolved[(r.ur_start + r.ur_len++) % URMAX] = ev;
+            while(resolve(&r, fmap_exp));
+          }
+        }
       }
     }
 
