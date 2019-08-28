@@ -16,6 +16,8 @@
 #include <stdbool.h>
 #include <time.h>
 
+#include "config.h"
+
 #ifndef NDEBUG
 #define DEBUG(...) printf(__VA_ARGS__)
 
@@ -95,6 +97,15 @@ int open_output() {
 
 #define MAX_KBS 16
 
+bool device_name_check(const char *name){
+    for(size_t i = 0; i < sizeof(grab_by_name) / sizeof(*grab_by_name); i++){
+        if(strcasestr(name, grab_by_name[i])){
+            return true;
+        }
+    }
+    return false;
+}
+
 int open_inputs(int *res) {
   int n = 0;
 
@@ -122,7 +133,7 @@ int open_inputs(int *res) {
 
     ioctl(input, EVIOCGNAME(sizeof(buf)), buf);
     // DEBUG("%s\n", buf);
-    if (n < MAX_KBS && strcasestr(buf, "keyboard")) {
+    if (n < MAX_KBS && device_name_check(buf)) {
       ret = ioctl(input, EVIOCGRAB, 1);
       if (ret < 0) {
         close(input);
