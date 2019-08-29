@@ -206,7 +206,7 @@ struct resolver {
     size_t ur_len;
     size_t ur_start;
     /* when we decide how to treat a keypress, we have to remember what key to
-       release */
+       release.  This also implicitly maps out which keys are pressed. */
     int release_map[256];
     /* If we have an unresolvable event, we mark the time that it will become
        resolvable by timeout */
@@ -295,7 +295,6 @@ enum waveform check_waveform(const struct resolver *r, struct input_event ev){
     return WAVEFORM_NONE_YET;
 }
 
-
 /* helper function which tries to resolve the oldest key event.  Returns false
    if it deems the event unresolvable, setting the resolver.resolve_time as
    appropriate. */
@@ -317,12 +316,16 @@ bool resolve(struct resolver *r, int *fmap_exp){
                resolved the initial keypress */
             if(ev.code < MAX_CODE){
                 ev.code = r->release_map[ev.code];
+                r->release_map[ev.code] = 0;
             }
             switch(ev.code){
                 case KEYMAP_F:
                     // disable KEYMAP_F if it is the current one
                     if(r->current_keymap == KEYMAP_F)
                         r->current_keymap = KEYMAP_NONE;
+                    break;
+                case 0:
+                    // we must have sent this key release early; do nothing.
                     break;
                 default:
                     send_input_event(*r->out_fd, ev);
@@ -410,7 +413,8 @@ bool resolve(struct resolver *r, int *fmap_exp){
         }
     }else{
         // non EV_KEY events are passed through unchanged
-        send_input_event(*r->out_fd, ev);
+        if (ev.type == EV_SYN)
+            send_input_event(*r->out_fd, ev);
         resolved = true;
     }
 
@@ -419,6 +423,45 @@ bool resolve(struct resolver *r, int *fmap_exp){
         r->ur_len--;
         // but we start one later
         r->ur_start = (r->ur_start + 1) % URMAX;
+    }else{
+        /* if we decided we couldn't resolve the oldest event, but the newest
+           event is a key release, emit the key release immediately.  We know
+           that the initial press must have been resolved because if the
+           initial press had come after the unresolvable key, then now that
+           we have the release the unresolvable key would be resolvable. */
+        ev = r->unresolved[(r->ur_start + r->ur_len - 1) % URMAX];
+        if(ev.value == 0){
+            /* make the code look like whatever we mapped it to when we
+               resolved the initial keypress */
+            if(ev.code < MAX_CODE){
+                ev.code = r->release_map[ev.code];
+            }
+            switch(ev.code){
+                case KEYMAP_F:
+                    // disable KEYMAP_F if it is the current one
+                    if(r->current_keymap == KEYMAP_F)
+                        r->current_keymap = KEYMAP_NONE;
+                    // one less element
+                    r->ur_len--;
+                    break;
+                case KEY_LEFTALT:
+                case KEY_RIGHTALT:
+                case KEY_LEFTCTRL:
+                case KEY_RIGHTCTRL:
+                case KEY_LEFTMETA:
+                case KEY_RIGHTMETA:
+                case KEY_LEFTSHIFT:
+                case KEY_RIGHTSHIFT:
+                    // modifier keys don't get resolved early
+                    break;
+                default:
+                    send_input_event(*r->out_fd, ev);
+                    // mark the end of an input packet of keypresses
+                    send_uinput_vals(*r->out_fd, EV_SYN, SYN_REPORT, 0);
+                    // one less element
+                    r->ur_len--;
+            }
+        }
     }
     return resolved;
 }
