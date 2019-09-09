@@ -106,53 +106,90 @@ bool device_name_check(const char *name){
     return false;
 }
 
+int open_input(char *dev){
+  int fd = open(dev, O_RDWR);
+  if (fd < 0) {
+    fprintf(stderr, "%s: %s\n", dev, strerror(errno));
+    return -1;
+  }
+
+  char buf[256];
+  ioctl(fd, EVIOCGNAME(sizeof(buf)), buf);
+  // DEBUG("%s\n", buf);
+  if(device_name_check(buf)){
+    int ret = ioctl(fd, EVIOCGRAB, 1);
+    if (ret < 0) {
+      fprintf(stderr, "%s: %s\n", dev, strerror(errno));
+      close(fd);
+      return -1;
+    } else {
+      DEBUG("reading from %s (%s)\n", dev, buf);
+      return fd;
+    }
+  }
+  return -1;
+}
+
 int open_inputs(int *res) {
   int n = 0;
 
   char dev[512];
-  char buf[256];
-  int input;
-  int ret;
 
-  char devdir[] = "/dev/input";
-
-  DIR *d = opendir(devdir);
+  DIR *d = opendir("/dev/input");
   struct dirent *ent;
   while ((ent = readdir(d))) {
     if (ent->d_name != strstr(ent->d_name, "event"))
       continue;
 
-    snprintf(dev, sizeof(dev), "%s/%s", devdir, ent->d_name);
+    snprintf(dev, sizeof(dev), "/dev/input/%s", ent->d_name);
 
-    input = open(dev, O_RDWR);
-    if (input < 0) {
-      fprintf(stderr, "%s: %s\n", dev, strerror(errno));
-      close(input);
-      continue;
-    }
+    if(n < MAX_KBS){
+      int fd = open_input(dev);
+      if(fd < 0)
+        continue;
 
-    ioctl(input, EVIOCGNAME(sizeof(buf)), buf);
-    // DEBUG("%s\n", buf);
-    if (n < MAX_KBS && device_name_check(buf)) {
-      ret = ioctl(input, EVIOCGRAB, 1);
-      if (ret < 0) {
-        close(input);
-        printf("%s: %s\n", dev, strerror(errno));
-      } else {
-        res[n++] = input;
-        DEBUG("reading from %s (%s)\n", dev, buf);
-      }
+      res[n++] = fd;
     }
   }
 
   return n;
 }
 
+void handle_inotify_events(int inot, int *in_fds, int* n_kbs){
+    // most of this section is straight from `man 7 inotify`
+    char buf[4096] __attribute__ ((aligned(__alignof__(struct inotify_event))));
+    const struct inotify_event *event;
+
+    ssize_t len = read(inot, buf, sizeof(buf));
+    if(len == -1 && errno != EAGAIN){
+        perror("read");
+        exit(3);
+    }
+
+    // EAGAIN means we are out of events for now.
+    if(len <= 0) return;
+
+    // read all the events we just got
+    for(char *ptr = buf; ptr < buf + len;
+            ptr += sizeof(struct inotify_event) + event->len){
+        event = (const struct inotify_event *)ptr;
+
+        if(*n_kbs < MAX_KBS){
+            char dev[512];
+            snprintf(dev, sizeof(dev), "/dev/input/%s", event->name);
+            int fd = open_input(dev);
+            if(fd < 0)
+                continue;
+            in_fds[(*n_kbs)++] = fd;
+        }
+    }
+}
+
 #define MAX_CODE 256
 
 int open_inotify() {
   int inot = inotify_init();
-  inotify_add_watch(inot, "/dev/input", IN_CREATE | IN_DELETE);
+  inotify_add_watch(inot, "/dev/input", IN_CREATE);
 
   return inot;
 }
@@ -475,7 +512,6 @@ int main() {
   int n_kbs = open_inputs(in_fds);
   int out_fd = open_output();
   int inot = open_inotify();
-  char buf[16384];
 
   if (n_kbs == 0) {
     fputs("couldn't open any inputs", stderr);
@@ -536,17 +572,22 @@ int main() {
             r.unresolved[(r.ur_start + r.ur_len++) % URMAX] = ev;
             while(resolve(&r, fmap_exp));
           }
+        }else if(errno != EAGAIN){
+          // close this keyboard and left-shift the remaining fds
+          DEBUG("closing deviced\n");
+          close(in_fds[i]);
+          size_t nkbs_after = MAX_KBS - i - 1;
+          memmove(&in_fds[i], &in_fds[i+1], sizeof(*in_fds) * nkbs_after);
+          n_kbs--;
+          // don't skip the new in_fds[i];
+          i--;
         }
       }
     }
 
     if (FD_ISSET(inot, &fds)) {
-      DEBUG("reloading inputs\n");
-      read(inot, buf, sizeof(buf));
-      for (i = 0; i < n_kbs; i++) {
-        close(in_fds[i]);
-      }
-      n_kbs = open_inputs(in_fds);
+      DEBUG("detected new input\n");
+      handle_inotify_events(inot, in_fds, &n_kbs);
     }
   }
 }
