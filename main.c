@@ -16,6 +16,11 @@
 #include <stdbool.h>
 #include <time.h>
 
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+
 #include "config.h"
 
 #ifndef NDEBUG
@@ -43,7 +48,6 @@ void print_event(char *tag, struct input_event ev) {
   if (ev.type || ev.code || ev.value) {
     printf("%4s: %s", tag, type_str(ev.type));
     if (ev.type == EV_KEY)
-      printf(" %15s %6s\n", key_names[ev.code], val_names[ev.value]);
     else
       printf(" %15d %6d\n", ev.code, ev.value);
   }
@@ -54,17 +58,11 @@ void print_event(char *tag, struct input_event ev) {
 void print_event(char *tag, struct input_event ev) {}
 #endif
 
-int send_input_event(int fd, struct input_event ev) {
+int send_event_locally(void *data, struct input_event ev){
   print_event("out", ev);
-  return write(fd, &ev, sizeof(ev));
-}
+  int *fd = data;
 
-int send_uinput_vals(int fd, int type, int code, int value) {
-  struct input_event ev;
-  ev.type = type;
-  ev.code = code;
-  ev.value = value;
-  return send_input_event(fd, ev);
+  return write(*fd, &ev, sizeof(ev));
 }
 
 int open_output() {
@@ -236,7 +234,9 @@ enum keymap {
 
 // the state of the resolver thread, which decides how to interpret keys
 struct resolver {
-    int *out_fd;
+    // We can either send to a local keyboard device or to a network socket
+    int (*send)(void *send_data, struct input_event ev);
+    void *send_data;
     /* key events received, but we haven't decided how to treat them.  No key
        can be resolved until all of the keys before it are resolved. */
     struct input_event unresolved[URMAX];
@@ -365,7 +365,7 @@ bool resolve(struct resolver *r, int *fmap_exp){
                     // we must have sent this key release early; do nothing.
                     break;
                 default:
-                    send_input_event(*r->out_fd, ev);
+                    r->send(r->send_data, ev);
             }
             resolved = true;
         }
@@ -378,7 +378,7 @@ bool resolve(struct resolver *r, int *fmap_exp){
                     case WAVEFORM_MAIN_KEY_RELEASED:
                         resolved = true;
                         // a normal F
-                        send_input_event(*r->out_fd, ev);
+                        r->send(r->send_data, ev);
                         r->release_map[KEY_F] = KEY_F;
                         break;
                     case WAVEFORM_TIMEOUT:
@@ -401,7 +401,7 @@ bool resolve(struct resolver *r, int *fmap_exp){
                     case WAVEFORM_MAIN_KEY_RELEASED:
                         resolved = true;
                         // a normal D
-                        send_input_event(*r->out_fd, ev);
+                        r->send(r->send_data, ev);
                         r->release_map[KEY_D] = KEY_D;
                         break;
                     case WAVEFORM_TIMEOUT:
@@ -409,7 +409,7 @@ bool resolve(struct resolver *r, int *fmap_exp){
                         ev.code = KEY_LEFTMETA;
                         // when "D" is released, release the meta key
                         r->release_map[KEY_D] = KEY_LEFTMETA;
-                        send_input_event(*r->out_fd, ev);
+                        r->send(r->send_data, ev);
                         resolved = true;
                         break;
                     case WAVEFORM_NONE_YET:
@@ -428,7 +428,7 @@ bool resolve(struct resolver *r, int *fmap_exp){
                 if(original_code < MAX_CODE){
                     r->release_map[original_code] = ev.code;
                 }
-                send_input_event(*r->out_fd, ev);
+                r->send(r->send_data, ev);
                 resolved = true;
             }
         }
@@ -444,14 +444,14 @@ bool resolve(struct resolver *r, int *fmap_exp){
                     // ignore repeats of keymap modifiers
                     break;
                 default:
-                    send_input_event(*r->out_fd, ev);
+                    r->send(r->send_data, ev);
             }
             resolved = true;
         }
     }else{
         // non EV_KEY events are passed through unchanged
         if (ev.type == EV_SYN)
-            send_input_event(*r->out_fd, ev);
+            r->send(r->send_data, ev);
         resolved = true;
     }
 
@@ -492,9 +492,14 @@ bool resolve(struct resolver *r, int *fmap_exp){
                     // modifier keys don't get resolved early
                     break;
                 default:
-                    send_input_event(*r->out_fd, ev);
+                    r->send(r->send_data, ev);
                     // mark the end of an input packet of keypresses
-                    send_uinput_vals(*r->out_fd, EV_SYN, SYN_REPORT, 0);
+                    struct input_event syn_ev = {
+                        .type = EV_SYN,
+                        .code = SYN_REPORT,
+                        .value = 0,
+                    };
+                    r->send(r->send_data, syn_ev);
                     // one less element
                     r->ur_len--;
             }
@@ -503,29 +508,25 @@ bool resolve(struct resolver *r, int *fmap_exp){
     return resolved;
 }
 
+typedef struct {
+    int (*send)(void*, struct input_event);
+    // returns a max_fd value
+    int (*prep_select)(void*, fd_set *r_fds, fd_set *w_fds);
+    void (*handle_select)(void*, fd_set *r_fds, fd_set *w_fds);
+} app_t;
 
-int main() {
-  usleep(250000);
-
+int serve_loop(app_t app, void *app_data){
   int i, ret;
   int in_fds[MAX_KBS];
   int n_kbs = open_inputs(in_fds);
-  int out_fd = open_output();
   int inot = open_inotify();
 
   if (n_kbs == 0) {
     fputs("couldn't open any inputs", stderr);
     return 1;
   }
-  if (out_fd < 0) {
-    fputs("couldn't open output", stderr);
-    return 1;
-  }
 
-  // the main thread will read from the device
-
-  // have a thread responsible for resolving keypresses
-  struct resolver r = {.out_fd=&out_fd};
+  struct resolver r = {.send=app.send, .send_data=app_data};
 
   // expand the fmap
   int fmap_exp[256] = {0};
@@ -543,19 +544,31 @@ int main() {
   //                 {KEY_COMPOSE, KEY_VOLUMEUP},
   //                 {0, 0}};
 
-  fd_set fds;
+  fd_set r_fds, w_fds;
   while (1) {
-    FD_ZERO(&fds);
-    FD_SET(inot, &fds);
-    int max_fd = inot;
+    FD_ZERO(&r_fds);
+    FD_ZERO(&w_fds);
+
+    int max_fd = -1;
+    if(app.prep_select){
+        max_fd = app.prep_select(app_data, &r_fds, &w_fds);
+    }
+
+    FD_SET(inot, &r_fds);
+    if(inot > max_fd)
+        max_fd = inot;
     for (i = 0; i < n_kbs; i++) {
-      FD_SET(in_fds[i], &fds);
+      FD_SET(in_fds[i], &r_fds);
       if (in_fds[i] > max_fd)
         max_fd = in_fds[i];
     }
 
     struct timeval timeout;
-    select(1 + max_fd, &fds, NULL, NULL, NULL);
+    select(1 + max_fd, &r_fds, &w_fds, NULL, NULL);
+
+    if(app.handle_select){
+        app.handle_select(app_data, &r_fds, &w_fds);
+    }
 
     // if the timeout was reached, try to resolve immediately
     if(timeout.tv_sec == 0 && timeout.tv_usec == 0){
@@ -563,7 +576,7 @@ int main() {
     }
 
     for (i = 0; i < n_kbs; i++) {
-      if (FD_ISSET(in_fds[i], &fds)) {
+      if (FD_ISSET(in_fds[i], &r_fds)) {
         struct input_event ev;
         ret = read(in_fds[i], &ev, sizeof(struct input_event));
         if (ret > 0){
@@ -585,9 +598,375 @@ int main() {
       }
     }
 
-    if (FD_ISSET(inot, &fds)) {
+    if (FD_ISSET(inot, &r_fds)) {
       DEBUG("detected new input\n");
       handle_inotify_events(inot, in_fds, &n_kbs);
     }
   }
+}
+
+int main_local(void){
+    usleep(250000);
+    int out_fd = open_output();
+    if (out_fd < 0) {
+        fputs("couldn't open output", stderr);
+        return 1;
+    }
+    app_t local_app = {
+        .send=send_event_locally,
+    };
+    return serve_loop(local_app, &out_fd);
+}
+
+
+int gai_open(const char* host, const char* service, bool server_side){
+    int out_fd;
+
+    // prepare for getaddrinfo
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = 0;
+    //hints.ai_flags = server_side ? AI_PASSIVE : 0;
+
+    // get address of host
+    struct addrinfo* ai;
+    int ret = getaddrinfo(host, service, &hints, &ai);
+    if(ret != 0){
+        return 1;
+    }
+    // reset error
+    errno = 0;
+
+    // connect to the host
+    struct addrinfo* p;
+    for(p = ai; p != NULL; p = p->ai_next){
+        struct sockaddr_in* sin = (struct sockaddr_in*)p->ai_addr;
+        printf("%s to ip addr %s\n", server_side ? "Binding" : "Connecting",
+                inet_ntoa(sin->sin_addr));
+        // create a socket
+        out_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+        if(out_fd < -1){
+            perror("socket");
+            continue;
+        }
+        // bind/listen or connect, depending
+        if(server_side){
+            ret = bind(out_fd, p->ai_addr, p->ai_addrlen);
+            if(ret != 0){
+                perror("bind");
+                close(out_fd);
+                continue;
+            }
+            ret = listen(out_fd, 5);
+            if(ret != 0){
+                perror("bind");
+                close(out_fd);
+                continue;
+            }
+        }else{
+            printf("connecting!\n");
+            ret = connect(out_fd, p->ai_addr, p->ai_addrlen);
+            if(ret != 0){
+                perror("connect");
+                close(out_fd);
+                continue;
+            }
+        }
+        // if we made it here, we connected successfully
+        break;
+    }
+    // make sure we found something
+    if(p == NULL){
+        fprintf(stderr, "failed all attempts\n");
+        out_fd = -1;
+    }
+
+    freeaddrinfo(ai);
+
+    return out_fd;
+}
+
+typedef struct {
+    int clients[8];
+    size_t nclients;
+    size_t active_client;
+    // prepared data to send to client
+    char for_client[8192];
+    size_t fc_len;
+    int accept_fd;
+} kbd_server_t;
+
+int server_send_event(void *app_dafa, struct input_event ev){
+    print_event("out", ev);
+
+    kbd_server_t *s = app_dafa;
+    // drop the event if we have no clients
+    if(s->nclients == 0)
+        return 0;
+
+    char buffer[1024];
+    int len = snprintf(buffer, sizeof(buffer), "%lu:%lu:%lu:%lu:%lu\n",
+        (unsigned long)ev.type,
+        (unsigned long)ev.value,
+        (unsigned long)ev.code,
+        (unsigned long)ev.time.tv_sec,
+        (unsigned long)ev.time.tv_usec);
+
+    // if there's not room to buffer the entire event, just drop it.
+    if(s->fc_len + len > sizeof(s->for_client)){
+        fprintf(stderr, "Warning: full buffer, dropping events");
+        return 0;
+    }
+
+    memcpy(&s->for_client[s->fc_len], buffer, len);
+    s->fc_len += len;
+
+    return len;
+}
+
+int server_prep_select(void *app_data, fd_set *r_fds, fd_set *w_fds){
+    kbd_server_t *s = app_data;
+    int max_fd = -1;
+
+    // watch for incoming connections
+    FD_SET(s->accept_fd, r_fds);
+    if(s->accept_fd > max_fd)
+        max_fd = s->accept_fd;
+
+    // monitor clients for broken connections
+    for(size_t i = 0; i < s->nclients; i++){
+        FD_SET(s->clients[i], r_fds);
+        if(s->clients[i] > max_fd)
+            max_fd = s->clients[i];
+    }
+
+    // do we need to write to the active client?
+    if(s->nclients > 0 && s->fc_len > 0){
+        FD_SET(s->clients[s->active_client], w_fds);
+        if(s->clients[s->active_client] > max_fd)
+            max_fd = s->clients[s->active_client];
+    }
+
+    return max_fd;
+}
+
+void server_close_client(kbd_server_t *s, size_t i){
+    close(s->clients[i]);
+    size_t nafter = sizeof(s->clients)/sizeof(*s->clients) - i - 1;
+    memmove(&s->clients[i], &s->clients[i+1],
+            sizeof(*s->clients) * nafter);
+    // how to update active_client?
+    if(s->active_client == i){
+        s->active_client = 0;
+        s->fc_len = 0;
+    }else if(s->active_client > i){
+        s->active_client--;
+    }
+    s->nclients--;
+}
+
+void server_handle_select(void *app_data, fd_set *r_fds, fd_set *w_fds){
+    kbd_server_t *s = app_data;
+
+    // check if we can write to the active client
+    if(s->nclients > 0 && FD_ISSET(s->clients[s->active_client], w_fds)){
+        ssize_t len = send(s->clients[s->active_client], s->for_client,
+                s->fc_len, 0);
+        if(len <= 0){
+            fprintf(stderr, "failed to write to active client\n");
+            server_close_client(s, s->active_client);
+        }else{
+            s->fc_len -= len;
+        }
+    }
+
+    // check for any disconnected clients
+    for(size_t i = 0; i < s->nclients; i++){
+        if(FD_ISSET(s->clients[i], r_fds)){
+            char buffer[4096];
+            ssize_t len = read(s->clients[i], buffer, sizeof(buffer));
+            // we never actually expect to read from a client
+            if(len > 1){
+                fprintf(stderr, "read unexpected bytes from a client\n");
+            }else{
+                fprintf(stderr, "client connection terminated\n");
+                server_close_client(s, i);
+                i--;
+            }
+        }
+    }
+
+    // handle accept
+    if(FD_ISSET(s->accept_fd, r_fds)){
+        struct sockaddr_in c_addr;
+        socklen_t c_len = sizeof(c_addr);
+        int client = accept(s->accept_fd, (struct sockaddr*)&c_addr, &c_len);
+        if(client < 0){
+            perror("accept");
+            exit(7);
+        }
+
+        if(s->nclients + 1 > sizeof(s->clients) / sizeof(*s->clients)){
+            fprintf(stderr, "too many clients\n");
+            // too many clients already
+            close(client);
+            return;
+        }
+
+        s->clients[s->nclients++] = client;
+
+        // ui hack: make the latest client active and kick the previous client.
+        if(s->nclients > 1){
+            close(s->clients[0]);
+            s->nclients--;
+            s->clients[0] = client;
+        }
+    }
+}
+
+
+int main_serve(char *host, char *port){
+    usleep(250000);
+
+    kbd_server_t server = {0};
+    app_t server_app = {
+        .send=server_send_event,
+        .prep_select=server_prep_select,
+        .handle_select=server_handle_select,
+    };
+
+    server.accept_fd = gai_open(host, port, true);
+    if (server.accept_fd < 0) {
+        fputs("couldn't open output", stderr);
+        return 1;
+    }
+    return serve_loop(server_app, &server);
+}
+
+int first_newline(char *string, int maxlen){
+    for(int i = 0; i < maxlen; i++){
+       if(string[i] == '\n'){
+           return i;
+       }
+    }
+    return -1;
+}
+
+int main_connect(char *host, char *port){
+    int out_fd = open_output();
+    if (out_fd < 0) {
+        fputs("couldn't open output", stderr);
+        return 1;
+    }
+
+    int sock = gai_open(host, port, false);
+    if (sock < 0) {
+        fputs("couldn't open output", stderr);
+        return 1;
+    }
+
+    // just loop over reading from the socket
+    char buffer[1024];
+    size_t blen = 0;
+    while(true){
+        // if the buffer is more than half full, just empty it
+        if(blen > sizeof(buffer)/2){
+            blen = 0;
+        }
+
+        // read in up to half of the buffer
+        ssize_t rlen = read(sock, &buffer[blen], sizeof(buffer) / 2);
+        if(rlen == -1){
+            perror("read");
+            return 2;
+        }
+        if(rlen == 0){
+            // normal shutdown on other end
+            fprintf(stderr, "server shut down\n");
+            perror("recv");
+            return 2;
+        }
+        blen += rlen;
+
+        // for as long as we have a complete line in the buffer...
+        int idx;
+        while((idx = first_newline(buffer, blen)) > -1){
+            // ... try to unmarshal an event
+            unsigned long type, value, code, sec, usec;
+            int found = sscanf(buffer, "%lu:%lu:%lu:%lu:%lu\n",
+                    &type, &value, &code, &sec, &usec);
+            // was it a valid event?
+            if(found == 5){
+                struct input_event ev = {
+                    .type=type,
+                    .value=value,
+                    .code=code,
+                    .time={
+                        .tv_sec=sec,
+                        .tv_usec=usec,
+                    },
+                };
+                //printf("%*s", idx, buffer);
+                send_event_locally(&out_fd, ev);
+            }
+            // discard the line
+            memmove(buffer, &buffer[idx + 1], blen - idx - 1);
+            blen -= idx + 1;
+        }
+    }
+}
+
+void print_help(void){
+    printf(
+        "usage: keytap local              # modify local keyboards\n"
+        "usage: keytap serve [host] port  # serve local keyboard on network\n"
+        "usage: keytap connect host port  # read from a network keyboard\n"
+    );
+}
+
+int main(int argc, char **argv) {
+    if(argc > 1){
+        if(!strcmp(argv[1], "--help")){
+            print_help();
+            return 0;
+        }
+
+        if(!strcmp(argv[1], "local")){
+            if(argc != 2){
+                print_help();
+                return 1;
+            }
+            return main_local();
+        }
+
+        if(!strcmp(argv[1], "serve")){
+            char *port;
+            char *host;
+            if(argc == 3){
+                host = NULL;
+                port = argv[2];
+            }else if(argc == 4){
+                host = argv[2];
+                port = argv[3];
+            }else{
+                print_help();
+                return 1;
+            }
+            return main_serve(host, port);
+        }
+
+        if(!strcmp(argv[1], "connect")){
+            if(argc != 4){
+                print_help();
+                return 1;
+            }
+            char *host = argv[2];
+            char *port = argv[3];
+            return main_connect(host, port);
+        }
+    }
+    print_help();
+    return 1;
 }

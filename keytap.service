@@ -2,7 +2,7 @@
 Description=keytap
 
 [Service]
-ExecStart=/usr/local/sbin/keytap
+ExecStart=/usr/local/sbin/keytap local
 
 [Install]
 WantedBy=default.target
