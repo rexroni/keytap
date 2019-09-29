@@ -1,6 +1,7 @@
 CC=gcc
 CFLAGS=-Wall -Wno-unused-result
 LD=ld
+LDFLAGS=-llua
 
 ifeq ($(DEBUG),true)
 	CFLAGS+=-g

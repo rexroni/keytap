@@ -1,5 +1,4 @@
 #include "devices.h"
-#include "config.h"
 
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -15,6 +14,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+const char *grab_by_name[] = {"keyboard", "ergodox"};
 
 int open_output() {
   int i;

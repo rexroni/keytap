@@ -27,6 +27,7 @@
 #include "networking.h"
 #include "resolver.h"
 #include "devices.h"
+#include "config.h"
 
 // alternate keymap, based on the "f" key, keys not present are passed through.
 int fmap[][2] = {
