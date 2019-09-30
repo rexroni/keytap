@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <getopt.h>
 
 #include <stdbool.h>
 #include <time.h>
@@ -67,7 +68,7 @@ int serve_loop(app_t app, void *app_data){
   int inot = open_inotify();
 
   if (n_kbs == 0) {
-    fputs("couldn't open any inputs", stderr);
+    fprintf(stderr, "couldn't open any inputs\n");
     return 1;
   }
 
@@ -161,7 +162,7 @@ int main_serve(char *host, char *port){
 
     server.accept_fd = gai_open(host, port, true);
     if (server.accept_fd < 0) {
-        fputs("couldn't open output", stderr);
+        fprintf(stderr, "couldn't open output\n");
         return 1;
     }
     return serve_loop(server_app, &server);
@@ -177,7 +178,7 @@ int main_local(void){
     usleep(250000);
     int out_fd = open_output();
     if (out_fd < 0) {
-        fputs("couldn't open output", stderr);
+        fprintf(stderr, "couldn't open output\n");
         return 1;
     }
     app_t local_app = {
@@ -198,13 +199,13 @@ int first_newline(char *string, int maxlen){
 int main_connect(char *host, char *port){
     int out_fd = open_output();
     if (out_fd < 0) {
-        fputs("couldn't open output", stderr);
+        fprintf(stderr, "couldn't open output\n");
         return 1;
     }
 
     int sock = gai_open(host, port, false);
     if (sock < 0) {
-        fputs("couldn't open output", stderr);
+        fprintf(stderr, "couldn't open output\n");
         return 1;
     }
 
@@ -264,33 +265,91 @@ void print_help(void){
         "usage: keytap local              # modify local keyboards\n"
         "usage: keytap serve [host] port  # serve local keyboard on network\n"
         "usage: keytap connect host port  # read from a network keyboard\n"
+        "\n"
+        "options:\n"
+        " -h, --help           print this help text\n"
+        " -c, --config FILE    set config file (default /etc/keytap/conf.lua)\n"
     );
 }
 
-int main(int argc, char **argv) {
-    if(argc > 1){
-        if(!strcmp(argv[1], "--help")){
-            print_help();
-            return 0;
-        }
+typedef struct {
+    char *config;
+} opts_t;
 
-        if(!strcmp(argv[1], "local")){
-            if(argc != 2){
+// Separate positional args and options; return 0 on success or -1 on error
+int parse_opts(int argc, char **argv, int *nargs, char ***args, opts_t *opts){
+    // configure cli options
+    char *optstring = "hc:";
+    struct option longopts[] = {
+        {.name="config", .has_arg=1, .flag=NULL, .val='c'},
+        {.name="help", .has_arg=1, .flag=NULL, .val='h'},
+        {0},
+    };
+
+    // set default options
+    *opts = (opts_t){
+        .config="/etc/keytap/conf.lua",
+    };
+
+    // read all options
+    int opt;
+    while((opt = getopt_long(argc, argv, optstring, longopts, NULL)) > -1){
+        switch(opt){
+            case 'c':
+                opts->config = optarg;
+                break;
+            case 'h':
+                print_help();
+                exit(0);
+                break;
+            default:
+                return -1;
+        }
+    }
+
+    *nargs = argc - optind;
+    *args = &argv[optind];
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    // parse command line arguments
+    int nargs;
+    char **args;
+    opts_t opts = {0};
+    if(parse_opts(argc, argv, &nargs, &args, &opts)){
+        print_help();
+        return 1;
+    }
+
+    // read config file
+    if(opts.config){
+        config_t *config = config_new(opts.config);
+        if(!config){
+            return 1;
+        }
+        config_free(config);
+    }
+
+    // interpret position arguments
+    if(nargs > 0){
+        if(!strcmp(args[0], "local")){
+            if(nargs != 1){
                 print_help();
                 return 1;
             }
             return main_local();
         }
 
-        if(!strcmp(argv[1], "serve")){
+        if(!strcmp(args[0], "serve")){
             char *port;
             char *host;
-            if(argc == 3){
+            if(nargs == 2){
                 host = NULL;
-                port = argv[2];
-            }else if(argc == 4){
-                host = argv[2];
-                port = argv[3];
+                port = args[1];
+            }else if(nargs == 3){
+                host = args[1];
+                port = args[2];
             }else{
                 print_help();
                 return 1;
@@ -298,13 +357,13 @@ int main(int argc, char **argv) {
             return main_serve(host, port);
         }
 
-        if(!strcmp(argv[1], "connect")){
-            if(argc != 4){
+        if(!strcmp(args[0], "connect")){
+            if(nargs != 3){
                 print_help();
                 return 1;
             }
-            char *host = argv[2];
-            char *port = argv[3];
+            char *host = args[1];
+            char *port = args[2];
             return main_connect(host, port);
         }
     }
