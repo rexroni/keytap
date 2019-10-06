@@ -50,4 +50,6 @@ typedef struct {
 config_t *config_new(const char* config_file);
 void config_free(config_t *config);
 
+key_action_t *key_action_get(key_action_t *ka, int i);
+
 #endif // CONFIG_H

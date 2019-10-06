@@ -564,3 +564,25 @@ void config_free(config_t *config){
     grab_free(config->grabs);
     free(config);
 }
+
+key_action_t *key_action_get(key_action_t *ka, int i){
+    for(size_t tries = 0; tries < 32; tries++){
+        switch(ka->type){
+            case KT_SIMPLE:
+            case KT_DUAL:
+                return ka;
+            case KT_MAP:
+                return &ka->key.map[i];
+            case KT_NONE:
+                // try again with another deref
+                ka = ka->key.ref;
+            default:
+                fprintf(stderr, "invalid key action in key_action_get()\n");
+                exit(1);
+        }
+    }
+
+    fprintf(stderr, "detected probable infinite recursion in keymap\n");
+    exit(1);
+    return NULL;
+}

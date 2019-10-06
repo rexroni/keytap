@@ -30,41 +30,10 @@
 #include "devices.h"
 #include "config.h"
 
-// alternate keymap, based on the "f" key, keys not present are passed through.
-int fmap[][2] = {
-    {KEY_H, KEY_LEFT},
-    {KEY_J, KEY_DOWN},
-    {KEY_K, KEY_UP},
-    {KEY_L, KEY_RIGHT},
-
-    {KEY_U, KEY_KPLEFTPAREN},
-    {KEY_I, KEY_KPRIGHTPAREN},
-    {KEY_O, KEY_LEFTBRACE},
-    {KEY_P, KEY_RIGHTBRACE},
-
-    {KEY_N, KEY_GRAVE},
-    {KEY_M, KEY_MINUS},
-    {KEY_COMMA, KEY_EQUAL},
-
-    {KEY_1, KEY_F1},
-    {KEY_2, KEY_F2},
-    {KEY_3, KEY_F3},
-    {KEY_4, KEY_F4},
-    {KEY_5, KEY_F5},
-    {KEY_6, KEY_F6},
-    {KEY_7, KEY_F7},
-    {KEY_8, KEY_F8},
-    {KEY_9, KEY_F9},
-    {KEY_0, KEY_F10},
-    {KEY_MINUS, KEY_F11},
-    {KEY_BACKSLASH, KEY_F12},
-};
-
-
-int serve_loop(app_t app, void *app_data){
-  int i, ret;
-  int in_fds[MAX_KBS];
-  int n_kbs = open_inputs(in_fds);
+int serve_loop(grab_t *grabs, app_t app, void *app_data){
+  int i, ret, n_kbs;
+  keyboard_t kbs[MAX_KBS];
+  open_inputs(kbs, &n_kbs, grabs, app.send, app_data);
   int inot = open_inotify();
 
   if (n_kbs == 0) {
@@ -72,85 +41,69 @@ int serve_loop(app_t app, void *app_data){
     return 1;
   }
 
-  struct resolver r = {.send=app.send, .send_data=app_data};
-
-  // expand the fmap
-  int fmap_exp[256] = {0};
-  for(int i = 0; i < sizeof(fmap_exp) / sizeof(*fmap_exp); i++)
-    fmap_exp[i] = i;
-  for(size_t i = 0; i < sizeof(fmap) / sizeof(*fmap); i++)
-    fmap_exp[fmap[i][0]] = fmap[i][1];
-
-  //int maps[][2] = {{KEY_CAPSLOCK, KEY_ESC},
-  //                 {KEY_RIGHTSHIFT, KEY_BACKSPACE},
-  //                 {KEY_LEFTALT, KEY_MINUS},
-  //                 {KEY_RIGHTALT, KEY_EQUAL},
-  //                 {KEY_LEFTSHIFT, KEY_MUTE},
-  //                 {KEY_LEFTMETA, KEY_VOLUMEDOWN},
-  //                 {KEY_COMPOSE, KEY_VOLUMEUP},
-  //                 {0, 0}};
-
-  fd_set r_fds, w_fds;
+  fd_set rd_fds, wr_fds;
   while (1) {
-    FD_ZERO(&r_fds);
-    FD_ZERO(&w_fds);
+    FD_ZERO(&rd_fds);
+    FD_ZERO(&wr_fds);
 
     int max_fd = -1;
     if(app.prep_select){
-        max_fd = app.prep_select(app_data, &r_fds, &w_fds);
+        max_fd = app.prep_select(app_data, &rd_fds, &wr_fds);
     }
 
-    FD_SET(inot, &r_fds);
+    FD_SET(inot, &rd_fds);
     if(inot > max_fd)
         max_fd = inot;
     for (i = 0; i < n_kbs; i++) {
-      FD_SET(in_fds[i], &r_fds);
-      if (in_fds[i] > max_fd)
-        max_fd = in_fds[i];
+      FD_SET(kbs[i].fd, &rd_fds);
+      if (kbs[i].fd > max_fd)
+        max_fd = kbs[i].fd;
     }
 
-    struct timeval timeout;
-    select(1 + max_fd, &r_fds, &w_fds, NULL, NULL);
+    // struct timeval timeout;
+    select(1 + max_fd, &rd_fds, &wr_fds, NULL, NULL);
 
     if(app.handle_select){
-        app.handle_select(app_data, &r_fds, &w_fds);
+        app.handle_select(app_data, &rd_fds, &wr_fds);
     }
 
-    // if the timeout was reached, try to resolve immediately
-    if(timeout.tv_sec == 0 && timeout.tv_usec == 0){
-        while(resolve(&r, fmap_exp));
-    }
+    // // if the timeout was reached, try to resolve immediately
+    // if(timeout.tv_sec == 0 && timeout.tv_usec == 0){
+    //     while(resolve(&r));
+    // }
 
     for (i = 0; i < n_kbs; i++) {
-      if (FD_ISSET(in_fds[i], &r_fds)) {
+      if (FD_ISSET(kbs[i].fd, &rd_fds)) {
         struct input_event ev;
-        ret = read(in_fds[i], &ev, sizeof(struct input_event));
+        ret = read(kbs[i].fd, &ev, sizeof(struct input_event));
         if (ret > 0){
+          struct resolver *r = &kbs[i].resolv;
           // add event to unresolved, or drop it if there isn't space for it
-          if(r.ur_len < URMAX){
-            r.unresolved[(r.ur_start + r.ur_len++) % URMAX] = ev;
-            while(resolve(&r, fmap_exp));
+          if(r->ur_len < URMAX){
+            r->unresolved[(r->ur_start + r->ur_len++) % URMAX] = ev;
+            while(resolve(r));
           }
         }else if(errno != EAGAIN){
           // close this keyboard and left-shift the remaining fds
-          close(in_fds[i]);
+          close(kbs[i].fd);
+          // TODO: do something to release any pressed keys here
           size_t nkbs_after = MAX_KBS - i - 1;
-          memmove(&in_fds[i], &in_fds[i+1], sizeof(*in_fds) * nkbs_after);
+          memmove(&kbs[i], &kbs[i+1], sizeof(*kbs) * nkbs_after);
           n_kbs--;
-          // don't skip the new in_fds[i];
+          // don't skip the new i-th entry of kbs
           i--;
         }
       }
     }
 
-    if (FD_ISSET(inot, &r_fds)) {
-      handle_inotify_events(inot, in_fds, &n_kbs);
+    if (FD_ISSET(inot, &rd_fds)) {
+      handle_inotify_events(inot, kbs, &n_kbs, grabs, app.send, app_data);
     }
   }
 }
 
 
-int main_serve(char *host, char *port){
+int main_serve(grab_t *grabs, char *host, char *port){
     usleep(250000);
 
     kbd_server_t server = {0};
@@ -165,7 +118,7 @@ int main_serve(char *host, char *port){
         fprintf(stderr, "couldn't open output\n");
         return 1;
     }
-    return serve_loop(server_app, &server);
+    return serve_loop(grabs, server_app, &server);
 }
 
 int send_event_locally(void *data, struct input_event ev){
@@ -174,7 +127,7 @@ int send_event_locally(void *data, struct input_event ev){
   return write(*fd, &ev, sizeof(ev));
 }
 
-int main_local(void){
+int main_local(grab_t *grabs){
     usleep(250000);
     int out_fd = open_output();
     if (out_fd < 0) {
@@ -184,7 +137,7 @@ int main_local(void){
     app_t local_app = {
         .send=send_event_locally,
     };
-    return serve_loop(local_app, &out_fd);
+    return serve_loop(grabs, local_app, &out_fd);
 }
 
 int first_newline(char *string, int maxlen){
@@ -323,12 +276,12 @@ int main(int argc, char **argv) {
     }
 
     // read config file
+    config_t *config = NULL;
     if(opts.config){
-        config_t *config = config_new(opts.config);
+        config = config_new(opts.config);
         if(!config){
             return 1;
         }
-        config_free(config);
     }
 
     // interpret position arguments
@@ -338,7 +291,7 @@ int main(int argc, char **argv) {
                 print_help();
                 return 1;
             }
-            return main_local();
+            return main_local(config->grabs);
         }
 
         if(!strcmp(args[0], "serve")){
@@ -354,7 +307,7 @@ int main(int argc, char **argv) {
                 print_help();
                 return 1;
             }
-            return main_serve(host, port);
+            return main_serve(config->grabs, host, port);
         }
 
         if(!strcmp(args[0], "connect")){

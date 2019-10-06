@@ -1,4 +1,5 @@
 #include "devices.h"
+#include "config.h"
 
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -45,63 +46,77 @@ int open_output() {
   return fd;
 }
 
-bool device_name_check(const char *name){
-    for(size_t i = 0; i < sizeof(grab_by_name) / sizeof(*grab_by_name); i++){
-        if(strcasestr(name, grab_by_name[i])){
+
+// check the linked list of grabs and return a root keymap if we should grab
+key_action_t *check_grabs(grab_t *grabs, const char *name){
+    for(grab_t *grab = grabs; grab != NULL; grab = grab->next){
+        int ret = regexec(&grab->regex, name, 0, NULL, 0);
+        if(ret != REG_NOMATCH){
+            return grab->ignore ? NULL : &grab->map;
+        }
+    }
+    return NULL;
+}
+
+// return true if we decided to grab the device
+static bool open_input(char *dev, grab_t *grabs, int *fd_out,
+        key_action_t **map_out){
+    int fd = open(dev, O_RDWR);
+    if (fd < 0) {
+        fprintf(stderr, "%s: %s\n", dev, strerror(errno));
+        return false;
+    }
+
+    char buf[256];
+    ioctl(fd, EVIOCGNAME(sizeof(buf)), buf);
+    key_action_t *map;
+    if((map = check_grabs(grabs, buf)) != NULL){
+        int ret = ioctl(fd, EVIOCGRAB, 1);
+        if (ret < 0) {
+            fprintf(stderr, "%s: %s\n", dev, strerror(errno));
+            close(fd);
+            return false;
+        } else {
+            *fd_out = fd;
+            *map_out = map;
             return true;
         }
     }
     return false;
 }
 
-static int open_input(char *dev){
-  int fd = open(dev, O_RDWR);
-  if (fd < 0) {
-    fprintf(stderr, "%s: %s\n", dev, strerror(errno));
-    return -1;
-  }
+void open_inputs(keyboard_t *kbs, int *n_kbs, grab_t *grabs, send_t send,
+        void *send_data){
+    *n_kbs = 0;
 
-  char buf[256];
-  ioctl(fd, EVIOCGNAME(sizeof(buf)), buf);
-  if(device_name_check(buf)){
-    int ret = ioctl(fd, EVIOCGRAB, 1);
-    if (ret < 0) {
-      fprintf(stderr, "%s: %s\n", dev, strerror(errno));
-      close(fd);
-      return -1;
-    } else {
-      return fd;
+    char dev[512];
+
+    DIR *d = opendir("/dev/input");
+    struct dirent *ent;
+    while ((ent = readdir(d))) {
+        if (ent->d_name != strstr(ent->d_name, "event"))
+            continue;
+
+        snprintf(dev, sizeof(dev), "/dev/input/%s", ent->d_name);
+
+        if(*n_kbs < MAX_KBS){
+            int fd;
+            key_action_t *map;
+            if(!open_input(dev, grabs, &fd, &map))
+                continue;
+
+            keyboard_t kb;
+            kb.fd = fd;
+            printf("resolver has root_keymap %p\n", map);
+            resolver_init(&kb.resolv, map, send, send_data);
+
+            kbs[(*n_kbs)++] = kb;
+        }
     }
-  }
-  return -1;
 }
 
-int open_inputs(int *res) {
-  int n = 0;
-
-  char dev[512];
-
-  DIR *d = opendir("/dev/input");
-  struct dirent *ent;
-  while ((ent = readdir(d))) {
-    if (ent->d_name != strstr(ent->d_name, "event"))
-      continue;
-
-    snprintf(dev, sizeof(dev), "/dev/input/%s", ent->d_name);
-
-    if(n < MAX_KBS){
-      int fd = open_input(dev);
-      if(fd < 0)
-        continue;
-
-      res[n++] = fd;
-    }
-  }
-
-  return n;
-}
-
-void handle_inotify_events(int inot, int *in_fds, int* n_kbs){
+void handle_inotify_events(int inot, keyboard_t *kbs, int* n_kbs,
+        grab_t *grabs, send_t send, void *send_data){
     // most of this section is straight from `man 7 inotify`
     char buf[4096] __attribute__ ((aligned(__alignof__(struct inotify_event))));
     const struct inotify_event *event;
@@ -123,10 +138,16 @@ void handle_inotify_events(int inot, int *in_fds, int* n_kbs){
         if(*n_kbs < MAX_KBS){
             char dev[512];
             snprintf(dev, sizeof(dev), "/dev/input/%s", event->name);
-            int fd = open_input(dev);
-            if(fd < 0)
+            int fd;
+            key_action_t *map;
+            if(!open_input(dev, grabs, &fd, &map))
                 continue;
-            in_fds[(*n_kbs)++] = fd;
+
+            keyboard_t kb;
+            kb.fd = fd;
+            resolver_init(&kb.resolv, map, send, send_data);
+
+            kbs[(*n_kbs)++] = kb;
         }
     }
 }

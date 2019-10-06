@@ -1,4 +1,7 @@
-char *key_names[] = {
+#ifndef NAMES_H
+#define NAMES_H
+
+static char *key_names[] = {
     "KEY_RESERVED", "KEY_ESC", "KEY_1", "KEY_2", "KEY_3", "KEY_4", "KEY_5",
     "KEY_6", "KEY_7", "KEY_8", "KEY_9", "KEY_0", "KEY_MINUS", "KEY_EQUAL",
     "KEY_BACKSPACE", "KEY_TAB", "KEY_Q", "KEY_W", "KEY_E", "KEY_R", "KEY_T",
@@ -49,4 +52,4 @@ char *key_names[] = {
     "KEY_DISPLAY_OFF", "KEY_WIMAX", "KEY_RFKILL", "KEY_MICMUTE"
 };
 
-char *val_names[] = {"UP", "DOWN", "REPEAT"};
+#endif // NAMES_H

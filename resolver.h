@@ -5,23 +5,22 @@
 #include <stdbool.h>
 #include <time.h>
 
+#include "app.h"
+#include "config.h"
+
 // maximum code that can represent a key
 #define MAX_CODE 256
 
 // the maximum number of unresolved events before we start dropping events
 #define URMAX 32
 
-/* if you find one of these values in the release_map, then that means
-   "instead of sending a keyrelease event, just stop using this keymap" */
-enum keymap {
-    KEYMAP_NONE = 0,
-    KEYMAP_F = 256,
-};
+// a special value in release_map which indicates we should reset the keymap
+#define RESET_KEYMAP 256
 
 // the state of the resolver thread, which decides how to interpret keys
 struct resolver {
     // We can either send to a local keyboard device or to a network socket
-    int (*send)(void *send_data, struct input_event ev);
+    send_t send;
     void *send_data;
     /* key events received, but we haven't decided how to treat them.  No key
        can be resolved until all of the keys before it are resolved. */
@@ -35,10 +34,20 @@ struct resolver {
        resolvable by timeout */
     struct timeval resolvable_time;
     bool use_resolvable_time;
-    enum keymap current_keymap;
+
+    key_action_t *root_keymap;
+    /* for now, we will only track a single current keymap, and releasing any
+       keyamp will send you back to the root keymap.  This isn't correct
+       behavior, but correct behavior seems complex and I can't quite decide on
+       what is correct behavior anyway.  For now, the simple solution is
+       sufficient. */
+    key_action_t *current_keymap;
 };
 
-bool resolve(struct resolver *r, int *fmap_exp);
+void resolver_init(struct resolver *r, key_action_t *root_keymap,
+        send_t send, void *send_data);
+
+bool resolve(struct resolver *r);
 
 // returns the timeout to be used for select(), which is either out or NULL
 struct timeval *select_timeout(struct resolver *r, struct timeval *out);
