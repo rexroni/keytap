@@ -113,6 +113,7 @@ void open_inputs(keyboard_t *kbs, int *n_kbs, grab_t *grabs, send_t send,
             kbs[(*n_kbs)++] = kb;
         }
     }
+    closedir(d);
 }
 
 void handle_inotify_events(int inot, keyboard_t *kbs, int* n_kbs,

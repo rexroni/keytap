@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <getopt.h>
+#include <signal.h>
 
 #include <stdbool.h>
 #include <time.h>
@@ -30,6 +31,11 @@
 #include "devices.h"
 #include "config.h"
 
+static volatile bool keep_going = true;
+static void quit_on_signal(int signum){
+    keep_going = false;
+}
+
 int serve_loop(grab_t *grabs, app_t app, void *app_data){
   int i, ret, n_kbs;
   keyboard_t kbs[MAX_KBS];
@@ -41,8 +47,10 @@ int serve_loop(grab_t *grabs, app_t app, void *app_data){
     return 1;
   }
 
+  int retval = 0;
+
   fd_set rd_fds, wr_fds;
-  while (1) {
+  while (keep_going) {
     FD_ZERO(&rd_fds);
     FD_ZERO(&wr_fds);
 
@@ -61,7 +69,16 @@ int serve_loop(grab_t *grabs, app_t app, void *app_data){
     }
 
     // struct timeval timeout;
-    select(1 + max_fd, &rd_fds, &wr_fds, NULL, NULL);
+    ret = select(1 + max_fd, &rd_fds, &wr_fds, NULL, NULL);
+    if(ret == -1){
+        if(errno == EINTR){
+            // signal interrupted us, restart loop
+            continue;
+        }
+        perror("select");
+        retval = 1;
+        break;
+    }
 
     if(app.handle_select){
         app.handle_select(app_data, &rd_fds, &wr_fds);
@@ -100,6 +117,13 @@ int serve_loop(grab_t *grabs, app_t app, void *app_data){
       handle_inotify_events(inot, kbs, &n_kbs, grabs, app.send, app_data);
     }
   }
+
+  for(int i = 0; i < n_kbs; i++){
+    close(kbs[i].fd);
+  }
+  close(inot);
+
+  return retval;
 }
 
 
@@ -118,7 +142,11 @@ int main_serve(grab_t *grabs, char *host, char *port){
         fprintf(stderr, "couldn't open output\n");
         return 1;
     }
-    return serve_loop(grabs, server_app, &server);
+
+    int retval = serve_loop(grabs, server_app, &server);
+
+    close(server.accept_fd);
+    return retval;
 }
 
 int send_event_locally(void *data, struct input_event ev){
@@ -137,7 +165,11 @@ int main_local(grab_t *grabs){
     app_t local_app = {
         .send=send_event_locally,
     };
-    return serve_loop(grabs, local_app, &out_fd);
+
+    int retval = serve_loop(grabs, local_app, &out_fd);
+
+    close(out_fd);
+    return retval;
 }
 
 int first_newline(char *string, int maxlen){
@@ -159,13 +191,16 @@ int main_connect(char *host, char *port){
     int sock = gai_open(host, port, false);
     if (sock < 0) {
         fprintf(stderr, "couldn't open output\n");
+        close(out_fd);
         return 1;
     }
+
+    int retval = 0;
 
     // just loop over reading from the socket
     char buffer[1024];
     size_t blen = 0;
-    while(true){
+    while(keep_going){
         // if the buffer is more than half full, just empty it
         if(blen > sizeof(buffer)/2){
             blen = 0;
@@ -174,14 +209,17 @@ int main_connect(char *host, char *port){
         // read in up to half of the buffer
         ssize_t rlen = read(sock, &buffer[blen], sizeof(buffer) / 2);
         if(rlen == -1){
+            if(errno == EINTR){
+                continue;
+            }
             perror("read");
-            return 2;
+            retval = 2;
+            break;
         }
         if(rlen == 0){
             // normal shutdown on other end
             fprintf(stderr, "server shut down\n");
-            perror("recv");
-            return 2;
+            break;
         }
         blen += rlen;
 
@@ -211,6 +249,11 @@ int main_connect(char *host, char *port){
             blen -= idx + 1;
         }
     }
+
+    close(sock);
+    close(out_fd);
+
+    return retval;
 }
 
 void print_help(void){
@@ -284,14 +327,24 @@ int main(int argc, char **argv) {
         }
     }
 
+    // prepare for signals
+    signal(SIGINT, quit_on_signal);
+    signal(SIGTERM, quit_on_signal);
+    signal(SIGPIPE, SIG_IGN);
+
+    int retval = 1;
+
     // interpret position arguments
+    if(nargs == 0){
+        goto help;
+    }
     if(nargs > 0){
         if(!strcmp(args[0], "local")){
             if(nargs != 1){
-                print_help();
-                return 1;
+                goto help;
             }
-            return main_local(config->grabs);
+            retval = main_local(config->grabs);
+            goto done;
         }
 
         if(!strcmp(args[0], "serve")){
@@ -304,22 +357,28 @@ int main(int argc, char **argv) {
                 host = args[1];
                 port = args[2];
             }else{
-                print_help();
-                return 1;
+                goto help;
             }
-            return main_serve(config->grabs, host, port);
+            retval = main_serve(config->grabs, host, port);
+            goto done;
         }
 
         if(!strcmp(args[0], "connect")){
             if(nargs != 3){
-                print_help();
-                return 1;
+                goto help;
             }
             char *host = args[1];
             char *port = args[2];
-            return main_connect(host, port);
+            retval = main_connect(host, port);
+            goto done;
         }
     }
+
+help:
     print_help();
-    return 1;
+    retval = 1;
+
+done:
+    config_free(config);
+    return retval;
 }
