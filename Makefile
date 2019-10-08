@@ -1,7 +1,7 @@
 CC=gcc
 CFLAGS=-Wall -Wno-unused-result
 LD=ld
-LDFLAGS=-llua
+LDFLAGS=-llua -lsystemd
 
 ifeq ($(DEBUG),true)
 	CFLAGS+=-g
@@ -27,4 +27,4 @@ install: keytap
 	install --owner root --group root --mode 4755 keytap /usr/local/sbin
 
 install-systemd: install
-	sudo cp -p keytap.service /etc/systemd/system/
+	cp keytap.service /etc/systemd/system/

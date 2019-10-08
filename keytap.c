@@ -23,6 +23,8 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 
+#include <systemd/sd-daemon.h>
+
 #include "app.h"
 #include "server.h"
 #include "time_util.h"
@@ -36,10 +38,22 @@ static void quit_on_signal(int signum){
     keep_going = false;
 }
 
-int serve_loop(grab_t *grabs, app_t app, void *app_data){
+// command line inputs
+typedef struct {
+    char *config;
+    bool systemd;
+} opts_t;
+
+// run-time config (post-processed version of opts_t)
+typedef struct {
+    config_t *config;
+    bool systemd;
+} runopts_t;
+
+int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
   int i, ret, n_kbs;
   keyboard_t kbs[MAX_KBS];
-  open_inputs(kbs, &n_kbs, grabs, app.send, app_data);
+  open_inputs(kbs, &n_kbs, runopts->config->grabs, app.send, app_data);
   int inot = open_inotify();
 
   if (n_kbs == 0) {
@@ -48,6 +62,11 @@ int serve_loop(grab_t *grabs, app_t app, void *app_data){
   }
 
   int retval = 0;
+
+  // notify systemd we are up (if --systemd or -d was given)
+  if(runopts->systemd){
+    sd_notify(0, "READY=1");
+  }
 
   fd_set rd_fds, wr_fds;
   while (keep_going) {
@@ -114,8 +133,13 @@ int serve_loop(grab_t *grabs, app_t app, void *app_data){
     }
 
     if (FD_ISSET(inot, &rd_fds)) {
-      handle_inotify_events(inot, kbs, &n_kbs, grabs, app.send, app_data);
+      handle_inotify_events(inot, kbs, &n_kbs, runopts->config->grabs,
+              app.send, app_data);
     }
+  }
+
+  if(runopts->systemd){
+      sd_notify(0, "STOPPING=1");
   }
 
   for(int i = 0; i < n_kbs; i++){
@@ -127,7 +151,7 @@ int serve_loop(grab_t *grabs, app_t app, void *app_data){
 }
 
 
-int main_serve(grab_t *grabs, char *host, char *port){
+int main_serve(const runopts_t *runopts, char *host, char *port){
     usleep(250000);
 
     kbd_server_t server = {0};
@@ -143,7 +167,7 @@ int main_serve(grab_t *grabs, char *host, char *port){
         return 1;
     }
 
-    int retval = serve_loop(grabs, server_app, &server);
+    int retval = serve_loop(runopts, server_app, &server);
 
     close(server.accept_fd);
     return retval;
@@ -155,7 +179,7 @@ int send_event_locally(void *data, struct input_event ev){
   return write(*fd, &ev, sizeof(ev));
 }
 
-int main_local(grab_t *grabs){
+int main_local(const runopts_t *runopts){
     usleep(250000);
     int out_fd = open_output();
     if (out_fd < 0) {
@@ -166,7 +190,7 @@ int main_local(grab_t *grabs){
         .send=send_event_locally,
     };
 
-    int retval = serve_loop(grabs, local_app, &out_fd);
+    int retval = serve_loop(runopts, local_app, &out_fd);
 
     close(out_fd);
     return retval;
@@ -181,7 +205,7 @@ int first_newline(char *string, int maxlen){
     return -1;
 }
 
-int main_connect(char *host, char *port){
+int main_connect(const runopts_t *runopts, char *host, char *port){
     int out_fd = open_output();
     if (out_fd < 0) {
         fprintf(stderr, "couldn't open output\n");
@@ -196,6 +220,10 @@ int main_connect(char *host, char *port){
     }
 
     int retval = 0;
+
+    if(runopts->systemd){
+        sd_notify(0, "READY=1");
+    }
 
     // just loop over reading from the socket
     char buffer[1024];
@@ -250,6 +278,10 @@ int main_connect(char *host, char *port){
         }
     }
 
+    if(runopts->systemd){
+        sd_notify(0, "STOPPING=1");
+    }
+
     close(sock);
     close(out_fd);
 
@@ -265,12 +297,9 @@ void print_help(void){
         "options:\n"
         " -h, --help           print this help text\n"
         " -c, --config FILE    set config file (default /etc/keytap/conf.lua)\n"
+        "     --systemd        run as systemd Type=notify service\n"
     );
 }
-
-typedef struct {
-    char *config;
-} opts_t;
 
 // Separate positional args and options; return 0 on success or -1 on error
 int parse_opts(int argc, char **argv, int *nargs, char ***args, opts_t *opts){
@@ -279,12 +308,14 @@ int parse_opts(int argc, char **argv, int *nargs, char ***args, opts_t *opts){
     struct option longopts[] = {
         {.name="config", .has_arg=1, .flag=NULL, .val='c'},
         {.name="help", .has_arg=1, .flag=NULL, .val='h'},
+        {.name="systemd", .has_arg=0, .flag=NULL, .val='d'},
         {0},
     };
 
     // set default options
     *opts = (opts_t){
         .config="/etc/keytap/conf.lua",
+        .systemd=false,
     };
 
     // read all options
@@ -298,6 +329,9 @@ int parse_opts(int argc, char **argv, int *nargs, char ***args, opts_t *opts){
                 print_help();
                 exit(0);
                 break;
+            case 'd':
+                opts->systemd = true;
+                break;
             default:
                 return -1;
         }
@@ -307,6 +341,29 @@ int parse_opts(int argc, char **argv, int *nargs, char ***args, opts_t *opts){
     *args = &argv[optind];
     return 0;
 }
+
+// returns -1 on error
+int runopts_build(runopts_t *runopts, const opts_t *opts){
+    *runopts = (runopts_t){0};
+
+    // read config file
+    if(opts->config){
+        runopts->config = config_new(opts->config);
+        if(!runopts->config){
+            return -1;
+        }
+    }
+
+    // pass along simple values
+    runopts->systemd = opts->systemd;
+
+    return 0;
+}
+
+void runopts_free(runopts_t *runopts){
+    config_free(runopts->config);
+}
+
 
 int main(int argc, char **argv) {
     // parse command line arguments
@@ -318,13 +375,9 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // read config file
-    config_t *config = NULL;
-    if(opts.config){
-        config = config_new(opts.config);
-        if(!config){
-            return 1;
-        }
+    runopts_t runopts;
+    if(runopts_build(&runopts, &opts)){
+        return 1;
     }
 
     // prepare for signals
@@ -343,7 +396,7 @@ int main(int argc, char **argv) {
             if(nargs != 1){
                 goto help;
             }
-            retval = main_local(config->grabs);
+            retval = main_local(&runopts);
             goto done;
         }
 
@@ -359,7 +412,7 @@ int main(int argc, char **argv) {
             }else{
                 goto help;
             }
-            retval = main_serve(config->grabs, host, port);
+            retval = main_serve(&runopts, host, port);
             goto done;
         }
 
@@ -369,7 +422,7 @@ int main(int argc, char **argv) {
             }
             char *host = args[1];
             char *port = args[2];
-            retval = main_connect(host, port);
+            retval = main_connect(&runopts, host, port);
             goto done;
         }
     }
@@ -379,6 +432,6 @@ help:
     retval = 1;
 
 done:
-    config_free(config);
+    runopts_free(&runopts);
     return retval;
 }
