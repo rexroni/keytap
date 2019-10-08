@@ -23,18 +23,8 @@ clean:
 debug:
 	DEBUG=true $(MAKE) all
 
+install: keytap
+	install --owner root --group root --mode 4755 keytap /usr/local/sbin
 
-#
-# keytap: main.c
-# 	gcc -Wall -Wno-unused-result -O2 -DNDEBUG main.c -o keytap
-#
-# debug: main.c
-# 	gcc -Wall -ggdb main.c -o keytap
-#
-# install: keytap
-# 	sudo chown root:root keytap
-# 	sudo chmod 4755 keytap
-# 	sudo cp -p keytap /usr/local/sbin/
-#
-# install-systemd: install
-# 	sudo cp -p keytap.service /etc/systemd/system/
+install-systemd: install
+	sudo cp -p keytap.service /etc/systemd/system/
