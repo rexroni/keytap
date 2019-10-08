@@ -47,6 +47,16 @@ int gai_open(const char* host, const char* service, bool server_side){
                 close(out_fd);
                 continue;
             }
+            // set RESUSEADDR for the bind socket
+            int enable = 1;
+            ret = setsockopt(out_fd, SOL_SOCKET, SO_REUSEADDR, &enable,
+                    sizeof(enable));
+            if(ret != 0){
+                perror("setsockopt");
+                close(out_fd);
+                continue;
+            }
+            // start listening
             ret = listen(out_fd, 5);
             if(ret != 0){
                 perror("bind");
