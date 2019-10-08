@@ -26,24 +26,36 @@ enum waveform {
     WAVEFORM_HOLD,
     WAVEFORM_NONE_YET,
 };
-enum waveform check_waveform(const struct resolver *r, struct input_event ev){
+enum waveform check_waveform(const struct resolver *r, struct input_event ev,
+        dual_key_mode_t mode){
     struct timeval now = timeval_now();
 
     // is the keypress old enough that we know it is a modifier?
     if(msec_diff(now, ev.time) > 200){
         return WAVEFORM_HOLD;
     }
+    // in TIMEOUT_ONLY, we don't have to check any further
+    else if(mode == DUAL_MODE_TIMEOUT_ONLY){
+        return WAVEFORM_NONE_YET;
+    }
 
     int keys_pressed[256] = {0};
     for(size_t i = 1; i < r->ur_len; i++){
         struct input_event ev2 = r->unresolved[(r->ur_start + i) % URMAX];
+        // was the main key released?
         if(ev2.value == 0 && ev2.code == ev.code){
-            // the main key was released first, it's just its normal self
             return WAVEFORM_TAP;
-        }else if(ev2.value == 1 && ev2.code < MAX_CODE){
+        }
+        // in HOLD_ON_ROLLOVER mode, any key event but main-key-release is HOLD
+        else if(mode == DUAL_MODE_HOLD_ON_ROLLOVER && ev2.type == EV_KEY){
+            return WAVEFORM_HOLD;
+        }
+        // record the pressed state of the key
+        else if(ev2.value == 1 && ev2.code < MAX_CODE){
             keys_pressed[ev2.code] = 1;
-        }else if(ev2.value == 0 && ev2.code < MAX_CODE && keys_pressed[ev2.code]){
-            // some other key was pressed and released, main key is a modifier
+        }
+        // some other key was pressed and released, main key is a HOLD
+        else if(ev2.value == 0 && ev2.code < MAX_CODE && keys_pressed[ev2.code]){
             return WAVEFORM_HOLD;
         }
     }
@@ -129,7 +141,7 @@ bool resolve(struct resolver *r){
                     resolved = true;
                     break;
                 case KT_DUAL:
-                    switch(check_waveform(r, ev)){
+                    switch(check_waveform(r, ev, ka->key.dual.mode)){
                         // .tap and .hold must not be KT_DUALs
                         case WAVEFORM_TAP:
                             do_keypress(r, ev, ka->key.dual.tap);

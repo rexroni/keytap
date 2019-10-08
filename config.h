@@ -7,10 +7,20 @@
 struct key_action_t;
 typedef struct key_action_t key_action_t;
 
+typedef enum {
+    // rollover waveform triggers the "tap" key action
+    DUAL_MODE_TAP_ON_ROLLOVER = 0,
+    // rollover waveform triggers the "hold" key action
+    DUAL_MODE_HOLD_ON_ROLLOVER = 1,
+    // only the timeout can trigger the "hold" key action
+    DUAL_MODE_TIMEOUT_ONLY = 2,
+} dual_key_mode_t;
+
 typedef struct {
     // members must not be addtional key_dual_t's
     key_action_t *tap;
     key_action_t *hold;
+    dual_key_mode_t mode;
 } key_dual_t;
 
 enum key_type {

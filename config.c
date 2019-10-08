@@ -56,8 +56,9 @@ int key_action_dup(const key_action_t *in, key_action_t *out){
         case KT_NONE:   *out = *in; break;
         case KT_SIMPLE: *out = *in; break;
         case KT_DUAL:
-            // match type
+            // match type and mode
             out->type = in->type;
+            out->key.dual.mode = in->key.dual.mode;
             // match tap
             out->key.dual.tap = malloc(sizeof(*out->key.dual.tap));
             if(!out->key.dual.tap) goto fail;
@@ -271,8 +272,9 @@ int lua_new_key_action(lua_State *L){
 
 int lua_dual_key(lua_State *L){
     // check the number of arguments
-    if(lua_gettop(L) != 2){
-        lua_pushliteral(L, "dual_key() requires two arguments");
+    int nargs = lua_gettop(L);
+    if(nargs != 2 && nargs != 3){
+        lua_pushliteral(L, "dual_key() requires two or three arguments");
         goto fail;
     }
 
@@ -298,8 +300,28 @@ int lua_dual_key(lua_State *L){
         goto fail_hold;
     }
 
+    #define ARG3_MSG \
+        "dual_key() argument 3 must be one of: \n" \
+        "    TAP_ON_ROLLOVER, HOLD_ON_ROLLOVER, or TIMEOUT_ONLY."
+    if(nargs > 2 && !lua_isnumber(L, 3)){
+        lua_pushliteral(L, ARG3_MSG);
+        goto fail_tap;
+    }
+    dual_key_mode_t mode = DUAL_MODE_TAP_ON_ROLLOVER;
+    if(nargs > 2){
+        mode = lua_tonumber(L, 3);
+        switch(mode){
+            case DUAL_MODE_TAP_ON_ROLLOVER:
+            case DUAL_MODE_HOLD_ON_ROLLOVER:
+            case DUAL_MODE_TIMEOUT_ONLY:
+                break;
+            default:
+                lua_pushliteral(L, ARG3_MSG);
+        }
+    }
+
     // done with args
-    lua_pop(L, 2);
+    lua_pop(L, nargs);
 
     // push a new key_action to the stack
     if(lua_new_key_action(L)){
@@ -329,6 +351,7 @@ int lua_dual_key(lua_State *L){
     // copy args into place
     *ka->key.dual.tap = tap;
     *ka->key.dual.hold = hold;
+    ka->key.dual.mode = mode;
 
     return 1;
 
@@ -497,6 +520,14 @@ int set_lua_globals(config_t *config){
 
     lua_pushcfunction(L, lua_dual_key);
     lua_setglobal(L, "dual_key");
+
+    // make dual_key modes available
+    lua_pushnumber(L, DUAL_MODE_TAP_ON_ROLLOVER);
+    lua_setglobal(L, "TAP_ON_ROLLOVER");
+    lua_pushnumber(L, DUAL_MODE_HOLD_ON_ROLLOVER);
+    lua_setglobal(L, "HOLD_ON_ROLLOVER");
+    lua_pushnumber(L, DUAL_MODE_TIMEOUT_ONLY);
+    lua_setglobal(L, "TIMEOUT_ONLY");
 
     lua_pushcfunction(L, lua_grab_keyboard);
     lua_setglobal(L, "grab_keyboard");
