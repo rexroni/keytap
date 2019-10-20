@@ -7,6 +7,15 @@
 struct key_action_t;
 typedef struct key_action_t key_action_t;
 
+struct key_macro_t;
+typedef struct key_macro_t key_macro_t;
+
+struct key_macro_t{
+    int code;
+    bool press;
+    key_macro_t *next;
+};
+
 typedef enum {
     // rollover waveform triggers the "tap" key action
     DUAL_MODE_TAP_ON_ROLLOVER = 0,
@@ -26,12 +35,14 @@ typedef struct {
 enum key_type {
     KT_NONE,
     KT_SIMPLE,
+    KT_MACRO,
     KT_DUAL,
     KT_MAP,
 };
 
 union key_union {
     int simple;
+    key_macro_t *macro;
     key_dual_t dual;
     key_action_t *map; // always allocated to length of 256
     key_action_t *ref; // non-root keymaps with KT_NONE will have this filled
@@ -60,6 +71,7 @@ typedef struct {
 config_t *config_new(const char* config_file);
 void config_free(config_t *config);
 
+// helper function for dereferencing key actions from a key action map
 key_action_t *key_action_get(key_action_t *ka, int i);
 
 #endif // CONFIG_H

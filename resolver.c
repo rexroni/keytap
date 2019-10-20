@@ -132,6 +132,24 @@ void do_keypress(struct resolver *r, struct input_event ev, key_action_t *ka){
             ev.code = ka->key.simple;
             resolver_send_filtered(r, ev);
             break;
+        case KT_MACRO:
+            // send the whole chain of macros
+            for(key_macro_t *m = ka->key.macro; m; m = m->next){
+                struct input_event ev = {
+                    .type = EV_KEY,
+                    .value = m->press,
+                    .code = m->code,
+                };
+                resolver_send_filtered(r, ev);
+
+                struct input_event syn_ev = {
+                    .type = EV_SYN,
+                    .code = SYN_REPORT,
+                    .value = 0,
+                };
+                resolver_send_filtered(r, syn_ev);
+            }
+            break;
         case KT_MAP:
             // set the keymap
             r->current_keymap = ka;
@@ -188,6 +206,7 @@ bool resolve(struct resolver *r){
             key_action_t *ka = key_action_get(r->current_keymap, ev.code);
             switch(ka->type){
                 case KT_MAP:
+                case KT_MACRO:
                 case KT_SIMPLE:
                     do_keypress(r, ev, ka);
                     resolved = true;

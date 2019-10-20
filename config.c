@@ -21,12 +21,52 @@ static void *l_alloc (void *data, void *ptr, size_t osize, size_t nsize){
     }
 }
 
+key_macro_t *key_macro_new(int code, bool press){
+    key_macro_t *macro = malloc(sizeof(*macro));
+    if(!macro) return NULL;
+    *macro = (key_macro_t){0};
+    macro->code = code;
+    macro->press = press;
+    return macro;
+}
+
+void key_macro_free(key_macro_t *macro){
+    key_macro_t *next;
+    for(; macro != NULL; macro = next){
+        next = macro->next;
+        free(macro);
+    }
+}
+
+// This is not remotely efficient but it is definitely valid with lua GC'ing
+key_macro_t *key_macro_dup(key_macro_t *macro){
+    key_macro_t *copy = key_macro_new(macro->code, macro->press);
+    if(!copy) return NULL;
+
+    key_macro_t *old = macro;
+    key_macro_t *new = copy;
+    while(old->next){
+        new->next = key_macro_new(old->next->code, old->next->press);
+        if(!new->next){
+            key_macro_free(copy);
+            return NULL;
+        }
+        old = old->next;
+        new = new->next;
+    }
+
+    return copy;
+}
+
 void key_action_free(key_action_t *ka){
     if(!ka) return;
 
     switch(ka->type){
         case KT_NONE:   break;
         case KT_SIMPLE: break;
+        case KT_MACRO:
+            key_macro_free(ka->key.macro);
+            break;
         case KT_DUAL:
             key_action_free(ka->key.dual.tap);
             free(ka->key.dual.tap);
@@ -55,6 +95,11 @@ int key_action_dup(const key_action_t *in, key_action_t *out){
     switch(in->type){
         case KT_NONE:   *out = *in; break;
         case KT_SIMPLE: *out = *in; break;
+        case KT_MACRO:
+            out->key.macro = key_macro_dup(in->key.macro);
+            if(!out->key.macro) goto fail;
+            out->type = KT_MACRO;
+            break;
         case KT_DUAL:
             // match type and mode
             out->type = in->type;
@@ -109,10 +154,11 @@ void fill_map(key_action_t *tgt, key_action_t *base);
 // fill individual values based on a map and a default value
 void fill_action(key_action_t *tgt, key_action_t *base, key_action_t filler){
     switch(tgt->type){
-        case KT_SIMPLE: break;
         case KT_NONE:
             *tgt = filler;
             break;
+        case KT_SIMPLE: break;
+        case KT_MACRO: break;
         case KT_DUAL:
             fill_action(tgt->key.dual.tap, base, filler);
             fill_action(tgt->key.dual.hold, base, filler);
@@ -220,6 +266,57 @@ int copy_to_key_action(lua_State *L, int idx, key_action_t *ka){
     return -1;
 }
 
+int append_simple_key_to_macro(int n, key_macro_t **tail){
+    // validate
+    if(n < 0 || n >= 256){
+        fprintf(stderr, "Invalid key code: %d\n", (int)n);
+        return -1;
+    }
+
+    // append a key press
+    *tail = key_macro_new(n, true);
+    if(!*tail){
+        return -1;
+    }
+
+    // append a key release
+    (*tail)->next = key_macro_new(n, false);
+    if(!(*tail)->next){
+        return -1;
+    }
+
+    return 0;
+}
+
+// Copy a lua element, converting it to a key macro.  Return -1 on error.
+int append_copy_to_macro(lua_State *L, int idx, key_macro_t **tail){
+
+    // simple key type?
+    if(lua_isnumber(L, idx)){
+        lua_Number n = lua_tonumber(L, idx);
+        return append_simple_key_to_macro(n, tail);
+    }
+
+    // is it a key_action?
+    if(lua_isuserdata(L, idx)){
+        key_action_t *ka = lua_touserdata(L, idx);
+        switch(ka->type){
+            case KT_SIMPLE:
+                return append_simple_key_to_macro(ka->key.simple, tail);
+            case KT_MACRO:
+                *tail = key_macro_dup(ka->key.macro);
+                if(!*tail) return -1;
+                return 0;
+            default:
+                break;
+        }
+    }
+
+    // No other types are allowed
+    fprintf(stderr, "unallowed type in append_copy_to_macro()\n");
+    return -1;
+}
+
 int lua_key_action_tostring(lua_State *L){
     key_action_t *ka = lua_touserdata(L, lua_gettop(L));
     lua_pop(L, 1);
@@ -228,16 +325,25 @@ int lua_key_action_tostring(lua_State *L){
             lua_pushfstring(L, "NONE");
             break;
         case KT_SIMPLE:
-            lua_pushfstring(L, "%d", ka->key.simple);
+            if(ka->key.simple > 0 &&
+                    ka->key.simple < sizeof(key_names) / sizeof(*key_names)){
+                lua_pushfstring(L, "%s", key_names[ka->key.simple]);
+            }else{
+                lua_pushfstring(L, "key:%d", ka->key.simple);
+            }
+            break;
+        case KT_MACRO:
+            lua_pushliteral(L, "MACRO");
             break;
         case KT_DUAL:
-            lua_pushfstring(L, "DUAL");
+            lua_pushliteral(L, "MAP");
             break;
         case KT_MAP:
-            lua_pushfstring(L, "MAP");
+            lua_pushliteral(L, "MAP");
             break;
         default:
-            lua_pushfstring(L, "invalid key action");
+            lua_pushliteral(L, "invalid key action");
+            break;
     }
     return 1;
 }
@@ -268,6 +374,174 @@ int lua_new_key_action(lua_State *L){
     lua_setmetatable(L, ka_idx);
 
     return 0;
+}
+
+// build a chain of key events to be sent as a single key action
+int lua_macro(lua_State *L){
+    // check the number of arguments
+    int nargs = lua_gettop(L);
+    if(nargs == 0){
+        lua_pushliteral(L, "macro() requires at least one argument");
+        goto fail;
+    }
+
+    // build a macro chain from all the arguments
+    key_macro_t *macro = NULL;
+    key_macro_t **tail = &macro;
+    for(int i = 1; i <= nargs; i++){
+        // append a copy of the argument (as a macro) to the tail
+        int ret = append_copy_to_macro(L, i, tail);
+        if(ret < 0){
+            lua_pushliteral(L, "macro() failed to copy an argument");
+            goto fail_macro;
+        }
+
+        // find the new tail
+        while(*tail){
+            tail = &(*tail)->next;
+        }
+    }
+
+    // done with args
+    lua_pop(L, nargs);
+
+    // push a new key_action to the stack
+    if(lua_new_key_action(L)){
+        lua_pushliteral(L, "macro() failed to allocate memory");
+        goto fail_macro;
+    }
+    int ka_idx = lua_gettop(L);
+    key_action_t *ka = lua_touserdata(L, ka_idx);
+
+    ka->type = KT_MACRO;
+    ka->key.macro = macro;
+
+    return 1;
+
+fail_macro:
+    key_macro_free(macro);
+fail:
+    return lua_error(L);
+}
+
+// build a macro chain, wrapping it in SHIFT_PRESS ... SHIFT_RELEASE
+int lua_shift(lua_State *L){
+    // check the number of arguments
+    int nargs = lua_gettop(L);
+    if(nargs == 0){
+        lua_pushliteral(L, "shift() requires at least one argument");
+        goto fail;
+    }
+
+    // build a macro chain from all the arguments, starting with LEFTSHIFT (42)
+    key_macro_t *macro = key_macro_new(42, true);
+    if(!macro){
+        lua_pushliteral(L, "shift() failed to allocate memory");
+        goto fail;
+    }
+
+    key_macro_t **tail = &macro->next;
+    for(int i = 1; i <= nargs; i++){
+        // append a copy of the argument (as a macro) to the tail
+        int ret = append_copy_to_macro(L, i, tail);
+        if(ret < 0){
+            lua_pushliteral(L, "shift() failed to copy an argument");
+            goto fail_macro;
+        }
+
+        // find the new tail
+        while(*tail){
+            tail = &(*tail)->next;
+        }
+    }
+
+    // end by releasing the shift key
+    *tail = key_macro_new(42, false);
+    if(!*tail){
+        lua_pushliteral(L, "shift() failed to allocate memory");
+        goto fail;
+    }
+
+    // done with args
+    lua_pop(L, nargs);
+
+    // push a new key_action to the stack
+    if(lua_new_key_action(L)){
+        lua_pushliteral(L, "shift() failed to allocate memory");
+        goto fail_macro;
+    }
+    int ka_idx = lua_gettop(L);
+    key_action_t *ka = lua_touserdata(L, ka_idx);
+
+    ka->type = KT_MACRO;
+    ka->key.macro = macro;
+
+    return 1;
+
+fail_macro:
+    key_macro_free(macro);
+fail:
+    return lua_error(L);
+}
+
+// build a macro chain, wrapping it in CTRL_PRESS ... CTRL_RELEASE
+int lua_ctrl(lua_State *L){
+    // check the number of arguments
+    int nargs = lua_gettop(L);
+    if(nargs == 0){
+        lua_pushliteral(L, "ctrl() requires at least one argument");
+        goto fail;
+    }
+
+    // build a macro chain from all the arguments, starting with LEFTSHIFT (42)
+    key_macro_t *macro = key_macro_new(29, true);
+    if(!macro){
+        lua_pushliteral(L, "ctrl() failed to allocate memory");
+        goto fail;
+    }
+
+    key_macro_t **tail = &macro->next;
+    for(int i = 1; i <= nargs; i++){
+        // append a copy of the argument (as a macro) to the tail
+        int ret = append_copy_to_macro(L, i, tail);
+        if(ret < 0){
+            lua_pushliteral(L, "ctrl() failed to copy an argument");
+            goto fail_macro;
+        }
+
+        // find the new tail
+        while(*tail){
+            tail = &(*tail)->next;
+        }
+    }
+
+    // end by releasing the ctrl key
+    *tail = key_macro_new(29, false);
+    if(!*tail){
+        lua_pushliteral(L, "ctrl() failed to allocate memory");
+        goto fail;
+    }
+
+    // done with args
+    lua_pop(L, nargs);
+
+    // push a new key_action to the stack
+    if(lua_new_key_action(L)){
+        lua_pushliteral(L, "ctrl() failed to allocate memory");
+        goto fail_macro;
+    }
+    int ka_idx = lua_gettop(L);
+    key_action_t *ka = lua_touserdata(L, ka_idx);
+
+    ka->type = KT_MACRO;
+    ka->key.macro = macro;
+
+    return 1;
+
+fail_macro:
+    key_macro_free(macro);
+fail:
+    return lua_error(L);
 }
 
 int lua_dual_key(lua_State *L){
@@ -518,6 +792,15 @@ int set_lua_globals(config_t *config){
     lua_pushcfunction(L, lua_print);
     lua_setglobal(L, "print");
 
+    lua_pushcfunction(L, lua_macro);
+    lua_setglobal(L, "macro");
+
+    lua_pushcfunction(L, lua_shift);
+    lua_setglobal(L, "shift");
+
+    lua_pushcfunction(L, lua_ctrl);
+    lua_setglobal(L, "ctrl");
+
     lua_pushcfunction(L, lua_dual_key);
     lua_setglobal(L, "dual_key");
 
@@ -600,6 +883,7 @@ key_action_t *key_action_get(key_action_t *ka, int i){
     for(size_t tries = 0; tries < 32; tries++){
         switch(ka->type){
             case KT_SIMPLE:
+            case KT_MACRO:
             case KT_DUAL:
                 return ka;
             case KT_MAP:
@@ -607,6 +891,7 @@ key_action_t *key_action_get(key_action_t *ka, int i){
             case KT_NONE:
                 // try again with another deref
                 ka = ka->key.ref;
+                break;
             default:
                 fprintf(stderr, "invalid key action in key_action_get()\n");
                 exit(1);
