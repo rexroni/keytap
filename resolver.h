@@ -30,6 +30,15 @@ struct resolver {
     /* when we decide how to treat a keypress, we have to remember what key to
        release.  This also implicitly maps out which keys are pressed. */
     int release_map[256];
+
+    /* filter out duplicate key-press events and duplicate key-release events
+       using a simple reference-count-like strategy.  Multiple keyboards (or
+       duplicate keys on the keyboard, or modifier keys which are a part of a
+       macro, etc) will be unified as a logical OR of sorts. */
+    int press_count_map[256];
+    // filter out extraneous syn events when no real events were sent
+    bool sent_something;
+
     /* If we have an unresolvable event, we mark the time that it will become
        resolvable by timeout */
     struct timeval resolvable_time;

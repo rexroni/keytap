@@ -1,6 +1,6 @@
 #include "time_util.h"
 #include "resolver.h"
-// #include "names.h"
+#include "names.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -13,6 +13,58 @@ void resolver_init(struct resolver *r, key_action_t *root_keymap,
     r->send_data = send_data;
     r->root_keymap = root_keymap;
     r->current_keymap = root_keymap;
+}
+
+/* if two sources of a single key are present, send events according to the
+   logical OR of those keys.  Also drop EV_SYN events if we detect that no real
+   key events have been sent since the last EV_SYN event we sent. */
+void resolver_send_filtered(struct resolver *r, struct input_event ev){
+    if(ev.type == EV_KEY){
+        if(ev.code > 255){
+            fprintf(stderr, "invalid ev.code in resolver_send_filtered: %d\n",
+                    ev.code);
+        }
+
+        // key release event
+        else if(ev.value == 0){
+            if(r->press_count_map[ev.code] < 1){
+                fprintf(stderr, "invalid key release of %s in "
+                        "resolver_send_filtered\n", key_names[ev.code]);
+            }
+            // send event if this was the last key of this type released
+            else if(--r->press_count_map[ev.code] == 0){
+                r->send(r->send_data, ev);
+                r->sent_something = true;
+            }
+        }
+        // key press event
+        else if(ev.value == 1){
+            // send event if this was the first key of this type pressed
+            if(r->press_count_map[ev.code]++ == 0){
+                r->send(r->send_data, ev);
+                r->sent_something = true;
+            }
+        }
+        // key repeat event
+        else if(ev.value == 2){
+            r->send(r->send_data, ev);
+            r->sent_something = true;
+        }else{
+            fprintf(stderr, "dropping invalid ev.value %d in "
+                    "resolver_send_filtered\n", ev.value);
+        }
+
+    }else if(ev.type == EV_SYN){
+        // only send the EV_SYN event if some other event was sent
+        if(r->sent_something){
+            r->send(r->send_data, ev);
+            r->sent_something = false;
+        }
+
+    }else{
+        fprintf(stderr, "dropping invalid ev.type: %d in "
+                "resolver_send_filtered\n", ev.type);
+    }
 }
 
 /* Given a pressed dual-key X, check unresolved events to decide tap or hold.
@@ -78,7 +130,7 @@ void do_keypress(struct resolver *r, struct input_event ev, key_action_t *ka){
             r->release_map[ev.code] = ka->key.simple;
             // send the modified key
             ev.code = ka->key.simple;
-            r->send(r->send_data, ev);
+            resolver_send_filtered(r, ev);
             break;
         case KT_MAP:
             // set the keymap
@@ -125,7 +177,7 @@ bool resolve(struct resolver *r){
                     // we must have sent this key release early; do nothing.
                     break;
                 default:
-                    r->send(r->send_data, ev);
+                    resolver_send_filtered(r, ev);
             }
             resolved = true;
         }
@@ -171,16 +223,26 @@ bool resolve(struct resolver *r){
                resolved the initial keypress */
             ev.code = r->release_map[ev.code];
             if(ev.code != 0 && ev.code != RESET_KEYMAP){
-                r->send(r->send_data, ev);
+                /* TODO: generate fake repeats to avoid the situation where
+                         where a key is pressed twice and we can't tell which
+                         repeat is from the first press and which one is
+                         irrelevant.  For now, X handles its own key repeats
+                         so these don't really even matter. */
+                resolver_send_filtered(r, ev);
             }
             resolved = true;
+        }else{
+            fprintf(stderr, "dropping invalid ev.value %d in resolver\n",
+                    ev.value);
+            resolved = true;
         }
+    }else if(ev.type == EV_SYN){
+        // printf("EV_SYN\n");
+        resolver_send_filtered(r, ev);
+        resolved = true;
     }else{
-        // non EV_KEY events are passed through unchanged
-        if (ev.type == EV_SYN){
-            // printf("EV_SYN\n");
-            r->send(r->send_data, ev);
-        }
+        // other ev.types are passed through unchanged, and don't affect EV_SYN
+        r->send(r->send_data, ev);
         resolved = true;
     }
 
@@ -218,14 +280,14 @@ bool resolve(struct resolver *r){
                     // modifier keys don't get resolved early
                     break;
                 default:
-                    r->send(r->send_data, ev);
-                    // mark the end of an input packet of keypresses
+                    resolver_send_filtered(r, ev);
+                    // send a sync event for this generated key event
                     struct input_event syn_ev = {
                         .type = EV_SYN,
                         .code = SYN_REPORT,
                         .value = 0,
                     };
-                    r->send(r->send_data, syn_ev);
+                    resolver_send_filtered(r, syn_ev);
                     // one less element
                     r->ur_len--;
             }
