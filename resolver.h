@@ -1,21 +1,17 @@
 #ifndef RESOLVER_H
 #define RESOLVER_H
 
-#include <linux/input.h>
 #include <stdbool.h>
 #include <time.h>
 
 #include "app.h"
 #include "config.h"
 
-// maximum code that can represent a key
-#define MAX_CODE 256
-
 // the maximum number of unresolved events before we start dropping events
 #define URMAX 32
 
 // a special value in release_map which indicates we should reset the keymap
-#define RESET_KEYMAP 256
+#define RESET_KEYMAP (KEY_MAX + 1)
 
 // the state of the resolver thread, which decides how to interpret keys
 struct resolver {
@@ -29,13 +25,13 @@ struct resolver {
     size_t ur_start;
     /* when we decide how to treat a keypress, we have to remember what key to
        release.  This also implicitly maps out which keys are pressed. */
-    int release_map[256];
+    int release_map[KEY_MAX];
 
     /* filter out duplicate key-press events and duplicate key-release events
        using a simple reference-count-like strategy.  Multiple keyboards (or
        duplicate keys on the keyboard, or modifier keys which are a part of a
        macro, etc) will be unified as a logical OR of sorts. */
-    int press_count_map[256];
+    int press_count_map[KEY_MAX];
     // filter out extraneous syn events when no real events were sent
     bool sent_something;
 

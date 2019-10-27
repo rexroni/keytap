@@ -1,5 +1,6 @@
 #include "devices.h"
 #include "config.h"
+#include "names.h"
 
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -16,7 +17,11 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-const char *grab_by_name[] = {"keyboard", "ergodox"};
+void enable_ev_key_value(void *arg, const char *name, uint16_t val){
+    (void)name;
+    int *fd = arg;
+    ioctl(*fd, UI_SET_KEYBIT, val);
+}
 
 int open_output() {
   int i;
@@ -27,8 +32,15 @@ int open_output() {
 
   ioctl(fd, UI_SET_EVBIT, EV_KEY);
   ioctl(fd, UI_SET_EVBIT, EV_SYN);
-  for (i = 0; i < 256; i++)
-    ioctl(fd, UI_SET_KEYBIT, i);
+  ioctl(fd, UI_SET_EVBIT, EV_MSC);
+  ioctl(fd, UI_SET_EVBIT, EV_REL);
+
+  // keys and buttons
+  for_each_value(enable_ev_key_value, &fd);
+
+  // all rel events
+  for (i = REL_X; i <= REL_MAX ; i++)
+    ioctl(fd, UI_SET_RELBIT, i);
 
   struct uinput_user_dev uidev;
 
@@ -107,7 +119,6 @@ void open_inputs(keyboard_t *kbs, int *n_kbs, grab_t *grabs, send_t send,
 
             keyboard_t kb;
             kb.fd = fd;
-            printf("resolver has root_keymap %p\n", map);
             resolver_init(&kb.resolv, map, send, send_data);
 
             kbs[(*n_kbs)++] = kb;

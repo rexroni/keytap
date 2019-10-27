@@ -20,7 +20,7 @@ void resolver_init(struct resolver *r, key_action_t *root_keymap,
    key events have been sent since the last EV_SYN event we sent. */
 void resolver_send_filtered(struct resolver *r, struct input_event ev){
     if(ev.type == EV_KEY){
-        if(ev.code > 255){
+        if(ev.code > KEY_MAX){
             fprintf(stderr, "invalid ev.code in resolver_send_filtered: %d\n",
                     ev.code);
         }
@@ -29,7 +29,7 @@ void resolver_send_filtered(struct resolver *r, struct input_event ev){
         else if(ev.value == 0){
             if(r->press_count_map[ev.code] < 1){
                 fprintf(stderr, "invalid key release of %s in "
-                        "resolver_send_filtered\n", key_names[ev.code]);
+                        "resolver_send_filtered\n", get_input_name(ev.code));
             }
             // send event if this was the last key of this type released
             else if(--r->press_count_map[ev.code] == 0){
@@ -62,8 +62,9 @@ void resolver_send_filtered(struct resolver *r, struct input_event ev){
         }
 
     }else{
-        fprintf(stderr, "dropping invalid ev.type: %d in "
-                "resolver_send_filtered\n", ev.type);
+        // other ev.types are passed through unchanged
+        r->send(r->send_data, ev);
+        r->sent_something = true;
     }
 }
 
@@ -91,7 +92,7 @@ enum waveform check_waveform(const struct resolver *r, struct input_event ev,
         return WAVEFORM_NONE_YET;
     }
 
-    int keys_pressed[256] = {0};
+    int keys_pressed[KEY_MAX] = {0};
     for(size_t i = 1; i < r->ur_len; i++){
         struct input_event ev2 = r->unresolved[(r->ur_start + i) % URMAX];
         // was the main key released?
@@ -103,11 +104,11 @@ enum waveform check_waveform(const struct resolver *r, struct input_event ev,
             return WAVEFORM_HOLD;
         }
         // record the pressed state of the key
-        else if(ev2.value == 1 && ev2.code < MAX_CODE){
+        else if(ev2.value == 1 && ev2.code < KEY_MAX){
             keys_pressed[ev2.code] = 1;
         }
         // some other key was pressed and released, main key is a HOLD
-        else if(ev2.value == 0 && ev2.code < MAX_CODE && keys_pressed[ev2.code]){
+        else if(ev2.value == 0 && ev2.code < KEY_MAX && keys_pressed[ev2.code]){
             return WAVEFORM_HOLD;
         }
     }
@@ -176,13 +177,13 @@ bool resolve(struct resolver *r){
 
     if(ev.type == EV_KEY){
         // invalid key code
-        if(ev.code > 255){
+        if(ev.code > KEY_MAX){
             fprintf(stderr, "Dropping too-high keycode %d\n", ev.code);
             resolved = true;
         }
         // key released
         else if(ev.value == 0){
-            // printf("%.10s of %.10s\n", "release", key_names[ev.code]);
+            // printf("%.10s of %.10s\n", "release", get_input_name(ev.code));
             /* make the code look like whatever we mapped it to when we
                resolved the initial keypress */
             ev.code = r->release_map[ev.code];
@@ -201,7 +202,7 @@ bool resolve(struct resolver *r){
         }
         // key pressed
         else if(ev.value == 1){
-            // printf("%.10s of %.10s\n", "press", key_names[ev.code]);
+            // printf("%.10s of %.10s\n", "press", get_input_name(ev.code));
             // get the key action from the map
             key_action_t *ka = key_action_get(r->current_keymap, ev.code);
             switch(ka->type){
@@ -237,7 +238,7 @@ bool resolve(struct resolver *r){
         }
         // key repeated
         else if(ev.value == 2){
-            // printf("%.10s of %.10s\n", "repeat", key_names[ev.code]);
+            // printf("%.10s of %.10s\n", "repeat", get_input_name(ev.code));
             /* make the code look like whatever we mapped it to when we
                resolved the initial keypress */
             ev.code = r->release_map[ev.code];
@@ -260,8 +261,8 @@ bool resolve(struct resolver *r){
         resolver_send_filtered(r, ev);
         resolved = true;
     }else{
-        // other ev.types are passed through unchanged, and don't affect EV_SYN
-        r->send(r->send_data, ev);
+        // other ev.types are passed through unchanged
+        resolver_send_filtered(r, ev);
         resolved = true;
     }
 
@@ -277,7 +278,7 @@ bool resolve(struct resolver *r){
            initial press had come after the unresolvable key, then now that
            we have the release the unresolvable key would be resolvable. */
         ev = r->unresolved[(r->ur_start + r->ur_len - 1) % URMAX];
-        if(ev.value == 0 && ev.code < 256){
+        if(ev.value == 0 && ev.code < KEY_MAX){
             /* make the code look like whatever we mapped it to when we
                resolved the initial keypress */
             ev.code = r->release_map[ev.code];

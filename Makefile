@@ -11,7 +11,7 @@ endif
 
 all: keytap
 
-keytap: keytap.o server.o resolver.o time_util.o networking.o devices.o config.o
+keytap: keytap.o server.o resolver.o time_util.o networking.o devices.o config.o names.o
 
 %.o: %.c %.h Makefile
 

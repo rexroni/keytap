@@ -32,6 +32,7 @@
 #include "resolver.h"
 #include "devices.h"
 #include "config.h"
+#include "names.h"
 
 static volatile bool keep_going = true;
 static void quit_on_signal(int signum){
@@ -366,26 +367,31 @@ void runopts_free(runopts_t *runopts){
 
 
 int main(int argc, char **argv) {
+    int retval = 1;
+
+    if(names_init()){
+        fprintf(stderr, "failed to initialize memory\n");
+        return 1;
+    }
+
     // parse command line arguments
     int nargs;
     char **args;
     opts_t opts = {0};
     if(parse_opts(argc, argv, &nargs, &args, &opts)){
         print_help();
-        return 1;
+        goto cu_names;
     }
 
     runopts_t runopts;
     if(runopts_build(&runopts, &opts)){
-        return 1;
+        goto cu_names;
     }
 
     // prepare for signals
     signal(SIGINT, quit_on_signal);
     signal(SIGTERM, quit_on_signal);
     signal(SIGPIPE, SIG_IGN);
-
-    int retval = 1;
 
     // interpret position arguments
     if(nargs == 0){
@@ -397,7 +403,7 @@ int main(int argc, char **argv) {
                 goto help;
             }
             retval = main_local(&runopts);
-            goto done;
+            goto cu_opts;
         }
 
         if(!strcmp(args[0], "serve")){
@@ -413,7 +419,7 @@ int main(int argc, char **argv) {
                 goto help;
             }
             retval = main_serve(&runopts, host, port);
-            goto done;
+            goto cu_opts;
         }
 
         if(!strcmp(args[0], "connect")){
@@ -423,7 +429,7 @@ int main(int argc, char **argv) {
             char *host = args[1];
             char *port = args[2];
             retval = main_connect(&runopts, host, port);
-            goto done;
+            goto cu_opts;
         }
     }
 
@@ -431,7 +437,9 @@ help:
     print_help();
     retval = 1;
 
-done:
+cu_opts:
     runopts_free(&runopts);
+cu_names:
+    names_free();
     return retval;
 }

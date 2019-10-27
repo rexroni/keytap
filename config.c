@@ -8,6 +8,8 @@
 #include "config.h"
 #include "names.h"
 
+int copy_to_key_action(lua_State *L, int idx, key_action_t *ka);
+
 // An example lua allocator.
 // from https://www.lua.org/manual/5.3/manual.html#lua_Alloc
 static void *l_alloc (void *data, void *ptr, size_t osize, size_t nsize){
@@ -74,7 +76,7 @@ void key_action_free(key_action_t *ka){
             free(ka->key.dual.hold);
             break;
         case KT_MAP:
-            for(size_t i = 0; i < 256; i++){
+            for(size_t i = 0; i < KEY_MAX; i++){
                 key_action_free(&ka->key.map[i]);
             }
             free(ka->key.map);
@@ -127,10 +129,10 @@ int key_action_dup(const key_action_t *in, key_action_t *out){
             // match type
             out->type = in->type;
             // alloc map
-            out->key.map = malloc(sizeof(*out->key.map) * 256);
+            out->key.map = malloc(sizeof(*out->key.map) * KEY_MAX);
             if(!out->key.map) goto fail;
             // duplicate map elements
-            for(size_t i = 0; i < 256; i++){
+            for(size_t i = 0; i < KEY_MAX; i++){
                 if(key_action_dup(&in->key.map[i], &out->key.map[i])){
                     for(size_t ii = 0; ii < i; i++){
                         key_action_free(&out->key.map[ii]);
@@ -180,7 +182,7 @@ void fill_map(key_action_t *tgt, key_action_t *base){
     }
 
     // fill all KT_NONE's with references (or KT_SIMPLE's for the root map)
-    for(size_t i = 0; i < 256; i++){
+    for(size_t i = 0; i < KEY_MAX; i++){
         key_action_t filler;
         if(base == NULL){
             filler.type = KT_SIMPLE;
@@ -192,6 +194,47 @@ void fill_map(key_action_t *tgt, key_action_t *base){
 
         fill_action(&tgt->key.map[i], base, filler);
     }
+}
+
+
+// return 0/-1 on success/error
+int extract_table_to_key_map(lua_State *L, int table_idx, key_action_t *map){
+    // first key
+    lua_pushnil(L);
+    while(lua_next(L, table_idx) != 0){
+
+        // key is at index -2, value is at index -1
+
+        // get the key we will use in our internal hashmap
+        int key;
+        if(lua_isstring(L, -2)){
+            const char *name = lua_tostring(L, -2);
+            key = get_input_value(name);
+            if(!key){
+                fprintf(stderr, "no key with name %s\n", name);
+                return -1;
+            }
+        }else if(lua_isnumber(L, -2)){
+            lua_Number n = lua_tonumber(L, -2);
+            key = (int)n;
+        }else{
+            fprintf(stderr,
+                    "invalid key type in keymap, must be string or number\n");
+            return -1;
+        }
+
+        // duplicate the key action (this is a recursion)
+        if(copy_to_key_action(L, -1, &map[key])){
+            return -1;
+        }
+
+        // remove the value
+        lua_pop(L, 1);
+    }
+
+    // lua_next() removes the key at the very end
+
+    return 0;
 }
 
 // Copy a lua element, converting it into a key_action_t.  Return -1 on error.
@@ -209,7 +252,7 @@ int copy_to_key_action(lua_State *L, int idx, key_action_t *ka){
         lua_Number n = lua_tonumber(L, idx);
 
         // validate
-        if(n < 0 || n >= 256){
+        if(n < 0 || n >= KEY_MAX){
             fprintf(stderr, "Invalid key code: %d\n", (int)n);
             return -1;
         }
@@ -223,31 +266,22 @@ int copy_to_key_action(lua_State *L, int idx, key_action_t *ka){
     // key map?
     if(lua_istable(L, idx)){
         // alloc the map
-        key_action_t *map = malloc(sizeof(*map) * 256);
+        key_action_t *map = malloc(sizeof(*map) * KEY_MAX);
         if(!map) return -1;
 
-        // extract all the values from the table
-        for(size_t k = 0; k < 256; k++){
-            if(k < sizeof(key_names)/sizeof(*key_names)){
-                // look up this key name in the table
-                lua_pushstring(L, key_names[k]);
-                lua_gettable(L, idx);
-            }else{
-                // codes without names are passed unchanged
-                lua_pushnumber(L, (lua_Number)k);
-            }
-            // recurse
-            int ret = copy_to_key_action(L, lua_gettop(L), &map[k]);
-            // remove the table entry from the stack
-            lua_pop(L, 1);
+        // zeroize
+        for(size_t k = 0; k < KEY_MAX; k++){
+            map[k] = (key_action_t){.type=KT_NONE};
+        }
+
+        // this may recurse.
+        if(extract_table_to_key_map(L, idx, map)){
             // handle error: release everything we have allocated in map
-            if(ret){
-                for(size_t kk = 0; kk < k; kk++){
-                    key_action_free(&map[kk]);
-                }
-                free(map);
-                return -1;
+            for(size_t k = 0; k < KEY_MAX; k++){
+                key_action_free(&map[k]);
             }
+            free(map);
+            return -1;
         }
 
         ka->type = KT_MAP;
@@ -268,7 +302,7 @@ int copy_to_key_action(lua_State *L, int idx, key_action_t *ka){
 
 int append_simple_key_to_macro(int n, key_macro_t **tail){
     // validate
-    if(n < 0 || n >= 256){
+    if(n < 0 || n >= KEY_MAX){
         fprintf(stderr, "Invalid key code: %d\n", (int)n);
         return -1;
     }
@@ -325,12 +359,7 @@ int lua_key_action_tostring(lua_State *L){
             lua_pushfstring(L, "NONE");
             break;
         case KT_SIMPLE:
-            if(ka->key.simple > 0 &&
-                    ka->key.simple < sizeof(key_names) / sizeof(*key_names)){
-                lua_pushfstring(L, "%s", key_names[ka->key.simple]);
-            }else{
-                lua_pushfstring(L, "key:%d", ka->key.simple);
-            }
+            lua_pushfstring(L, "%s", get_input_name(ka->key.simple));
             break;
         case KT_MACRO:
             lua_pushliteral(L, "MACRO");
@@ -602,6 +631,7 @@ int lua_dual_key(lua_State *L){
         lua_pushliteral(L, "dual_key() failed to allocate memory");
         goto fail_hold;
     }
+
     int ka_idx = lua_gettop(L);
     key_action_t *ka = lua_touserdata(L, ka_idx);
     ka->type = KT_DUAL;
@@ -781,6 +811,13 @@ void grab_free(grab_t *grab){
     free(grab);
 }
 
+void add_global(void *arg, const char *name, uint16_t val){
+    lua_State *L = arg;
+    // map a key_name to its numeric value as a lua global variable
+    lua_pushnumber(L, val);
+    lua_setglobal(L, name);
+}
+
 int set_lua_globals(config_t *config){
     lua_State *L = config->L;
 
@@ -822,11 +859,7 @@ int set_lua_globals(config_t *config){
     // luaL_openlibs(L);
 
     // make a variable for every key_name with its numeric value
-    for(size_t i = 0; i < sizeof(key_names) / sizeof(*key_names); i++){
-        // map a key_name to its numeric value as a lua global variable
-        lua_pushnumber(L, (lua_Number)i);
-        lua_setglobal(L, key_names[i]);
-    }
+    for_each_name(add_global, L);
 
     return 0;
 }
