@@ -170,6 +170,9 @@ int main_serve(const runopts_t *runopts, char *host, char *port){
 
     int retval = serve_loop(runopts, server_app, &server);
 
+    for(size_t i = 0; i < server.nclients; i++){
+        close(server.clients[i]);
+    }
     close(server.accept_fd);
     return retval;
 }
