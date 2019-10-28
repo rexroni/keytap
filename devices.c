@@ -83,6 +83,7 @@ static bool open_input(char *dev, grab_t *grabs, int *fd_out,
     ioctl(fd, EVIOCGNAME(sizeof(buf)), buf);
     key_action_t *map;
     if((map = check_grabs(grabs, buf)) != NULL){
+        printf("grabbing %s\n", buf);
         int ret = ioctl(fd, EVIOCGRAB, 1);
         if (ret < 0) {
             fprintf(stderr, "%s: %s\n", dev, strerror(errno));
@@ -94,6 +95,7 @@ static bool open_input(char *dev, grab_t *grabs, int *fd_out,
             return true;
         }
     }
+    printf("ignoring %s\n", buf);
     return false;
 }
 
