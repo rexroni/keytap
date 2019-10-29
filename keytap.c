@@ -43,18 +43,31 @@ static void quit_on_signal(int signum){
 typedef struct {
     char *config;
     bool systemd;
+    bool verbose;
+    char* timeout;
 } opts_t;
 
 // run-time config (post-processed version of opts_t)
 typedef struct {
     config_t *config;
     bool systemd;
+    bool verbose;
+    int timeout;
 } runopts_t;
 
 int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
+  struct timeval exit_time;
+  bool timed_exit = false;
+  if(runopts->timeout > 0){
+      printf("preparing to exit after %d seconds\n", runopts->timeout);
+      exit_time = msec_after(timeval_now(), runopts->timeout * 1000);
+      timed_exit = true;
+  }
+
   int i, ret, n_kbs;
   keyboard_t kbs[MAX_KBS];
-  open_inputs(kbs, &n_kbs, runopts->config->grabs, app.send, app_data);
+  open_inputs(kbs, &n_kbs, runopts->config->grabs, app.send, app_data,
+          runopts->verbose);
   int inot = open_inotify();
 
   if (n_kbs == 0) {
@@ -88,8 +101,14 @@ int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
         max_fd = kbs[i].fd;
     }
 
-    // struct timeval timeout;
-    ret = select(1 + max_fd, &rd_fds, &wr_fds, NULL, NULL);
+    struct timeval time_till_exit;
+    struct timeval *timeout = NULL;
+    if(timed_exit){
+        time_till_exit = timeval_diff(exit_time, timeval_now());
+        timeout = &time_till_exit;
+    }
+
+    ret = select(1 + max_fd, &rd_fds, &wr_fds, NULL, timeout);
     if(ret == -1){
         if(errno == EINTR){
             // signal interrupted us, restart loop
@@ -104,10 +123,11 @@ int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
         app.handle_select(app_data, &rd_fds, &wr_fds);
     }
 
-    // // if the timeout was reached, try to resolve immediately
-    // if(timeout.tv_sec == 0 && timeout.tv_usec == 0){
-    //     while(resolve(&r));
-    // }
+    // if we reached the timeout, exit
+    if(timeout && timeout->tv_sec == 0 && timeout->tv_usec == 0){
+        printf("exiting due to timeout\n");
+        break;
+    }
 
     for (i = 0; i < n_kbs; i++) {
       if (FD_ISSET(kbs[i].fd, &rd_fds)) {
@@ -118,6 +138,10 @@ int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
           // add event to unresolved, or drop it if there isn't space for it
           if(r->ur_len < URMAX){
             r->unresolved[(r->ur_start + r->ur_len++) % URMAX] = ev;
+            // print names of keypresses
+            if(runopts->verbose && ev.type == EV_KEY && ev.value == 1){
+                printf("%s\n", get_input_name(ev.code));
+            }
             while(resolve(r));
           }
         }else if(errno != EAGAIN){
@@ -135,7 +159,7 @@ int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
 
     if (FD_ISSET(inot, &rd_fds)) {
       handle_inotify_events(inot, kbs, &n_kbs, runopts->config->grabs,
-              app.send, app_data);
+              app.send, app_data, runopts->verbose);
     }
   }
 
@@ -273,7 +297,10 @@ int main_connect(const runopts_t *runopts, char *host, char *port){
                         .tv_usec=usec,
                     },
                 };
-                //printf("%*s", idx, buffer);
+                // print names of keypresses
+                if(runopts->verbose && ev.type == EV_KEY && ev.value == 1){
+                    printf("%s\n", get_input_name(ev.code));
+                }
                 send_event_locally(&out_fd, ev);
             }
             // discard the line
@@ -301,6 +328,8 @@ void print_help(void){
         "options:\n"
         " -h, --help           print this help text\n"
         " -c, --config FILE    set config file (default /etc/keytap/conf.lua)\n"
+        " -v, --verbose        print useful info while running\n"
+        "     --timeout N      exit after N seconds (for testing)\n"
         "     --systemd        run as systemd Type=notify service\n"
     );
 }
@@ -308,11 +337,13 @@ void print_help(void){
 // Separate positional args and options; return 0 on success or -1 on error
 int parse_opts(int argc, char **argv, int *nargs, char ***args, opts_t *opts){
     // configure cli options
-    char *optstring = "hc:";
+    char *optstring = "hc:v";
     struct option longopts[] = {
         {.name="config", .has_arg=1, .flag=NULL, .val='c'},
-        {.name="help", .has_arg=1, .flag=NULL, .val='h'},
+        {.name="help", .has_arg=0, .flag=NULL, .val='h'},
         {.name="systemd", .has_arg=0, .flag=NULL, .val='d'},
+        {.name="verbose", .has_arg=0, .flag=NULL, .val='v'},
+        {.name="timeout", .has_arg=1, .flag=NULL, .val='t'},
         {0},
     };
 
@@ -329,12 +360,18 @@ int parse_opts(int argc, char **argv, int *nargs, char ***args, opts_t *opts){
             case 'c':
                 opts->config = optarg;
                 break;
+            case 't':
+                opts->timeout = optarg;
+                break;
             case 'h':
                 print_help();
                 exit(0);
                 break;
             case 'd':
                 opts->systemd = true;
+                break;
+            case 'v':
+                opts->verbose = true;
                 break;
             default:
                 return -1;
@@ -358,8 +395,13 @@ int runopts_build(runopts_t *runopts, const opts_t *opts){
         }
     }
 
+    if(opts->timeout){
+        runopts->timeout = atoi(opts->timeout);
+    }
+
     // pass along simple values
     runopts->systemd = opts->systemd;
+    runopts->verbose = opts->verbose;
 
     return 0;
 }

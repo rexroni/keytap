@@ -13,12 +13,12 @@ typedef struct {
     struct resolver resolv;
 } keyboard_t;
 
-int open_output();
+int open_output(void);
 bool device_name_check(const char *name);
 void open_inputs(keyboard_t *kbs, int *n_kbs, grab_t *grabs, send_t send,
-        void *send_data);
+        void *send_data, bool verbose);
 void handle_inotify_events(int inot, keyboard_t *kbs, int* n_kbs,
-        grab_t *grabs, send_t send, void *send_data);
+        grab_t *grabs, send_t send, void *send_data, bool verbose);
 int open_inotify();
 
 #endif // DEVICES_H

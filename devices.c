@@ -72,7 +72,7 @@ key_action_t *check_grabs(grab_t *grabs, const char *name){
 
 // return true if we decided to grab the device
 static bool open_input(char *dev, grab_t *grabs, int *fd_out,
-        key_action_t **map_out){
+        key_action_t **map_out, bool verbose){
     int fd = open(dev, O_RDWR);
     if (fd < 0) {
         fprintf(stderr, "%s: %s\n", dev, strerror(errno));
@@ -83,7 +83,9 @@ static bool open_input(char *dev, grab_t *grabs, int *fd_out,
     ioctl(fd, EVIOCGNAME(sizeof(buf)), buf);
     key_action_t *map;
     if((map = check_grabs(grabs, buf)) != NULL){
-        printf("grabbing %s\n", buf);
+        if(verbose){
+            printf("grabbing %s\n", buf);
+        }
         int ret = ioctl(fd, EVIOCGRAB, 1);
         if (ret < 0) {
             fprintf(stderr, "%s: %s\n", dev, strerror(errno));
@@ -95,12 +97,14 @@ static bool open_input(char *dev, grab_t *grabs, int *fd_out,
             return true;
         }
     }
-    printf("ignoring %s\n", buf);
+    if(verbose){
+        printf("ignoring %s\n", buf);
+    }
     return false;
 }
 
 void open_inputs(keyboard_t *kbs, int *n_kbs, grab_t *grabs, send_t send,
-        void *send_data){
+        void *send_data, bool verbose){
     *n_kbs = 0;
 
     char dev[512];
@@ -116,7 +120,7 @@ void open_inputs(keyboard_t *kbs, int *n_kbs, grab_t *grabs, send_t send,
         if(*n_kbs < MAX_KBS){
             int fd;
             key_action_t *map;
-            if(!open_input(dev, grabs, &fd, &map))
+            if(!open_input(dev, grabs, &fd, &map, verbose))
                 continue;
 
             keyboard_t kb;
@@ -130,7 +134,7 @@ void open_inputs(keyboard_t *kbs, int *n_kbs, grab_t *grabs, send_t send,
 }
 
 void handle_inotify_events(int inot, keyboard_t *kbs, int* n_kbs,
-        grab_t *grabs, send_t send, void *send_data){
+        grab_t *grabs, send_t send, void *send_data, bool verbose){
     // most of this section is straight from `man 7 inotify`
     char buf[4096] __attribute__ ((aligned(__alignof__(struct inotify_event))));
     const struct inotify_event *event;
@@ -154,7 +158,7 @@ void handle_inotify_events(int inot, keyboard_t *kbs, int* n_kbs,
             snprintf(dev, sizeof(dev), "/dev/input/%s", event->name);
             int fd;
             key_action_t *map;
-            if(!open_input(dev, grabs, &fd, &map))
+            if(!open_input(dev, grabs, &fd, &map, verbose))
                 continue;
 
             keyboard_t kb;

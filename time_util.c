@@ -8,10 +8,18 @@ struct timeval timeval_now(){
     return now;
 }
 
-// helper function for difference of two struct timespec's (computes "a - b")
+// helper functions for difference of two struct timeval's (compute "a - b")
 long msec_diff(struct timeval a, struct timeval b){
     long diff = (a.tv_usec / 1000) - (b.tv_usec / 1000);
     return diff + (a.tv_sec - b.tv_sec) * 1000;
+}
+struct timeval timeval_diff(struct timeval a, struct timeval b){
+    long usec_diff = a.tv_usec - b.tv_usec;
+    long usec_mod = usec_diff % 1000000;
+    if(usec_mod < 0) usec_mod += 1000000;
+    struct timeval out = {.tv_usec=usec_mod};
+    out.tv_sec = a.tv_sec - b.tv_sec + (usec_diff - usec_mod) / 1000000;
+    return out;
 }
 
 struct timeval msec_after(struct timeval tv, long millis){

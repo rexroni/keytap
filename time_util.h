@@ -7,8 +7,9 @@
 
 struct timeval timeval_now();
 
-// helper function for difference of two struct timespec's (computes "a - b")
+// helper functions for difference of two struct timeval's (compute "a - b")
 long msec_diff(struct timeval a, struct timeval b);
+struct timeval timeval_diff(struct timeval a, struct timeval b);
 
 struct timeval msec_after(struct timeval tv, long millis);
 
