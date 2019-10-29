@@ -321,13 +321,13 @@ int main_connect(const runopts_t *runopts, char *host, char *port){
 
 void print_help(void){
     printf(
-        "usage: keytap local              # modify local keyboards\n"
-        "usage: keytap serve [host] port  # serve local keyboard on network\n"
-        "usage: keytap connect host port  # read from a network keyboard\n"
+        "usage: sdiol local              # modify local keyboards\n"
+        "usage: sdiol serve [host] port  # serve local keyboard on network\n"
+        "usage: sdiol connect host port  # read from a network keyboard\n"
         "\n"
         "options:\n"
         " -h, --help           print this help text\n"
-        " -c, --config FILE    set config file (default /etc/keytap/conf.lua)\n"
+        " -c, --config FILE    set config file (default /etc/sdiol/conf.lua)\n"
         " -v, --verbose        print useful info while running\n"
         "     --timeout N      exit after N seconds (for testing)\n"
         "     --systemd        run as systemd Type=notify service\n"
@@ -349,7 +349,7 @@ int parse_opts(int argc, char **argv, int *nargs, char ***args, opts_t *opts){
 
     // set default options
     *opts = (opts_t){
-        .config="/etc/keytap/conf.lua",
+        .config="/etc/sdiol/conf.lua",
         .systemd=false,
     };
 

@@ -9,22 +9,22 @@ else
 	CFLAGS+=-O2
 endif
 
-all: keytap
+all: sdiol
 
-keytap: keytap.o server.o resolver.o time_util.o networking.o devices.o config.o names.o
+sdiol: sdiol.o server.o resolver.o time_util.o networking.o devices.o config.o names.o
 
 %.o: %.c %.h Makefile
 
 .PHONY: clean
 clean:
-	rm -f *.o keytap
+	rm -f *.o sdiol
 
 .PHONY: debug
 debug:
 	DEBUG=true $(MAKE) all
 
-install: keytap
-	install --owner root --group root --mode 4755 keytap /usr/local/sbin
+install: sdiol
+	install --owner root --group root --mode 4755 sdiol /usr/local/bin
 
 install-systemd: install
-	cp keytap.service /etc/systemd/system/
+	cp sdiol.service /etc/systemd/system/

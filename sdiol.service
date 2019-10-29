@@ -1,0 +1,9 @@
+[Unit]
+Description=sdiol
+Type=notify
+
+[Service]
+ExecStart=/usr/local/bin/sdiol local --systemd
+
+[Install]
+WantedBy=default.target

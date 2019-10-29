@@ -46,7 +46,7 @@ int open_output() {
 
   memset(&uidev, 0, sizeof(uidev));
 
-  snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "keytap");
+  snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "sdiol");
   uidev.id.bustype = BUS_USB;
   uidev.id.vendor = 0x1111;
   uidev.id.product = 0x0001;

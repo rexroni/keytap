@@ -1,9 +1,0 @@
-[Unit]
-Description=keytap
-Type=notify
-
-[Service]
-ExecStart=/usr/local/sbin/keytap local --systemd
-
-[Install]
-WantedBy=default.target
