@@ -222,7 +222,7 @@ Just run:
 In order to install and enable the default `systemd` service, you can run:
 
     sudo make install-systemd
-    sudo systemd enable --now sdiol.service
+    sudo systemctl enable --now sdiol.service
 
 Note that the default `systemd` service depends on the existence of the default
 config file at `/etc/sdiol/conf.lua`.
