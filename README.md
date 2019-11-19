@@ -21,19 +21,9 @@ multiple keyboards and/or mice on your desk.
 `sdiol` operates at the device level, so it works equally well in tty, X
 windows, or Wayland environments.
 
+## User Guide
 
-## Building
-
-`sdiol` depends on `liblua.so` and `libsystemd.so` to build.  You should
-probably have some packages called `liblua5.3-dev` and `libsystemd-dev` or
-something on your system.
-
-Then just run:
-
-    make
-
-
-## Running
+See section on `Building` (below) if you want to follow along locally.
 
 Here is the output of `sdiol --help`:
 
@@ -48,13 +38,13 @@ Here is the output of `sdiol --help`:
          --timeout N      exit after N seconds (for testing)
          --systemd        run as systemd Type=notify service
 
-`sdiol` requires a lua configuration file to run (see below for details).  By
-default it looks for `/etc/sdiol/conf.lua`, but we can also specify a file with
-the `--config` option.
+`sdiol` requires a Lua configuration file to run (see `Configuration Reference`,
+below, for details).  By default it looks for `/etc/sdiol/conf.lua`, but we
+can also specify a file with the `--config` option.
 
 So let's start by creating a file called `conf.lua` with the following content:
 
-    -- the f key will expose an alternate layer to the keymap when held
+    -- the f key will expose an alternate layer of the keymap when held
     f_keymap = {
         -- when f is held, convert h/j/k/l to arrow keys
         KEY_H = KEY_LEFT,
@@ -90,7 +80,8 @@ The argument meanings are as follows:
 type `ctrl-c`, we don't have to reboot the computer
 
 * `--verbose` will help us debug our config by printing key names after each key
-press and by printing device names at startup or after a new device is pluged in
+press and by printing device names at startup or after a new device is plugged
+in
 
 If you don't see a line like `grabbing <your keyboard name>` you may have to
 edit the regex in `conf.lua` before continuing.
@@ -108,20 +99,20 @@ u/i into left/right parentheses for as long as you hold f
 * All other keys behave normally
 
 
-## Configuring
+## Configuration Reference
 
-`sdiol` is configured in lua.  A config is required, and can either be at the
+`sdiol` is configured in Lua.  A config is required, and can either be at the
 default location (`/etc/sdiol/conf.lua`) or at a location given by the
 `--config` option.
 
-The lua functions available for configuration are as follows:
+The Lua functions available for configuration are as follows:
 
 
 ### `grab_keyboard(REGEX, MAP)`
 
 Grab any keyboard with a name matching REGEX and assign it a keymap of MAP.
-REGEX should be a string and MAP should be a lua table with string keys.  The
-keys of the table should be the names of linux inputs, as you might find either
+REGEX should be a string and MAP should be a Lua table with string keys.  The
+keys of the table should be the names of Linux inputs, as you might find either
 through the use of the `--verbose` flag or by looking them up in
 `/usr/include/linux/input-event-codes.h`.  The values in MAP indicate what
 action should be taken when the corresponding key is pressed.
@@ -213,19 +204,39 @@ connections and will support cycling through them using a keybinding on the
 shared keyboard.
 
 
+## Building
+
+First install dependencies:
+
+* Archlinux: `sudo pacman -S libsystemd liblua cmake`
+
+* Debian/Ubuntu: `sudo apt install libsystemd-dev liblua5.3-dev cmake`
+
+Then run the following build steps from the `sdiol` directory`:
+
+    mkdir build
+    cd build
+    cmake ..
+    make
+
+
 ## Installing
 
-Just run:
+From the build directory, just run:
 
     sudo make install
 
-In order to install and enable the default `systemd` service, you can run:
+When you are satisfied with your `sdiol` configuration at `/etc/sdiol/conf.lua`,
+you can start `sdiol` as a background service:
 
-    sudo make install-systemd
-    sudo systemd enable --now sdiol.service
+    sudo systemctl start sdiol.service
 
-Note that the default `systemd` service depends on the existence of the default
-config file at `/etc/sdiol/conf.lua`.
+    # Then make sure it's working:
+    sudo systemctl status sdiol.service
+
+And if you want `sdiol` to start automatically on boot:
+
+    sudo systemctl enable sdiol.service
 
 
 ## Acknowledgements
