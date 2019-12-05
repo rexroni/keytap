@@ -212,7 +212,7 @@ First install dependencies:
 
 * Debian/Ubuntu: `sudo apt install libsystemd-dev liblua5.3-dev cmake`
 
-Then run the following build steps from the `sdiol` directory`:
+Then run the following build steps from the `sdiol` directory:
 
     mkdir build
     cd build
