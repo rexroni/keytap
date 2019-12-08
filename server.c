@@ -108,9 +108,7 @@ void server_handle_select(void *app_data, fd_set *r_fds, fd_set *w_fds){
 
     // handle accept
     if(FD_ISSET(s->accept_fd, r_fds)){
-        struct sockaddr_in c_addr;
-        socklen_t c_len = sizeof(c_addr);
-        int client = accept(s->accept_fd, (struct sockaddr*)&c_addr, &c_len);
+        int client = accept(s->accept_fd, NULL, 0);
         if(client < 0){
             perror("accept");
             exit(7);

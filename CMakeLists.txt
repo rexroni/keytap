@@ -10,6 +10,7 @@ set(sources
     sdiol.c
     server.c
     time_util.c
+    permissions.c
 )
 add_executable(sdiol ${sources})
 
@@ -26,6 +27,15 @@ target_link_libraries(sdiol "${LUA_LIBRARY}" "${SYSTEMD_LIBRARY}")
 
 # complier flags
 target_compile_options(sdiol PRIVATE -Wall -Wno-unused-result)
+
+# enable color output from compilier, unless it is explicitly disabled
+if("${COLORIZE_OUTPUT}" STREQUAL "")
+    set(COLORIZE_OUTPUT "yes")
+endif()
+if("${COLORIZE_OUTPUT}")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}  -fdiagnostics-color=always")
+endif()
+
 if("${CMAKE_BUILD_TYPE}" STREQUAL "debug")
     target_compile_options(sdiol PRIVATE -O2)
 else()

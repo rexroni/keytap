@@ -27,16 +27,24 @@ See section on `Building` (below) if you want to follow along locally.
 
 Here is the output of `sdiol --help`:
 
-    usage: sdiol local              # modify local keyboards
-    usage: sdiol serve [host] port  # serve local keyboard on network
-    usage: sdiol connect host port  # read from a network keyboard
+    usage: sdiol local                  # modify local IO
+    usage: sdiol serve unix_socket      # serve IO over a unix socket
+    usage: sdiol read                   # read IO from STDIN
 
-    options:
+    # insecure, experimental features:
+    usage: sdiol serve-tcp [host] port  # serve IO over the network
+    usage: sdiol connect host port      # read IO from the network
+
+    general options:
      -h, --help           print this help text
      -c, --config FILE    set config file (default /etc/sdiol/conf.lua)
      -v, --verbose        print useful info while running
          --timeout N      exit after N seconds (for testing)
          --systemd        run as systemd Type=notify service
+
+    options specific to sdiol serve:
+     --chown-socket USER:GROUP  set user and group of unix socket
+     --chmod-socket MODE        set mode of unix socket, e.g. 600
 
 `sdiol` requires a Lua configuration file to run (see `Configuration Reference`,
 below, for details).  By default it looks for `/etc/sdiol/conf.lua`, but we
@@ -173,13 +181,25 @@ would type `abcABC` when triggered.
 
 ## Serving Over A Network
 
-First: `sdiol` doesn't attempt to secure its network communication whatsoever
-(yet), so don't do this unless you trust all devices which could possibly
-access your network.  And even then, please don't type passwords or any
-sensitive information through a `sdiol serve` process.
+A note on terminology: Here, the "server" refers to the machine with a keyboard
+and/or mouse plugged in to it, and the "client" refers to the machine on which
+you want to receive keyboard and/or mouse events.
 
-But if you are comfortable with the limitations, serving a keyboard and a mouse
-could be done with a config file like:
+Using `sdiol serve` effectively has some additional requirements:
+
+* Have working `ssh` access from the client to the server.
+
+* Install the openbsd variant of netcat installed on the server (or an
+appropriate substitute).
+
+* A working knowledge of file permissions so other users with access to the
+server are not able to log all your keystrokes.
+
+
+### Configuring the `sdiol` server
+
+A simple `/etc/sdiol/conf.lua` for grabbing a keyboard and mouse might look
+like this:
 
     grab_keyboard(".*keyboard.*", {})
 
@@ -187,16 +207,24 @@ could be done with a config file like:
     -- but until then mice are grabbed with grab_keyboard()
     grab_keyboard(".*mouse.*", {})
 
-Then on the machine with the configuration file and with devices plugged into
-it, run:
+Then, assuming your user name was `bob` and you wanted to make sure that only
+your user could access the `sdiol` server, you could start it like this:
 
-    sudo sdiol serve 12345 --config CONFIG_FILE
+    sudo sdiol serve /run/sdiol.sock --chown-socket bob:bob
 
-And from the second machine, run:
+Be sure to check out the `--chown-socket` and `--chmod-socket` options and make
+sure you get the correct permissions on your socket for your environment.
 
-    sdiol connect ADDR 12345
 
-Where `ADDR` is the ip address of the first machine (or a resolvable hostname).
+### Connecting the `sdiol` client
+
+`sdiol` does not do secure networking at all, so instead we will use `ssh` to
+encrypt the connection to the server, then on the server we will use `nc` to
+connect to the socket.  This leaves `sdiol` to simply read events from stdin:
+
+    ssh bob@myserver nc -U /tmp/sdiol.sock | sudo sdiol read
+
+And you're in business!
 
 If a new client connects to the `sdiol` server, the first client will be
 disconnected.  In the future, `sdiol` will be able to maintain multiple client

@@ -33,6 +33,7 @@
 #include "devices.h"
 #include "config.h"
 #include "names.h"
+#include "permissions.h"
 
 static volatile bool keep_going = true;
 static void quit_on_signal(int signum){
@@ -45,6 +46,8 @@ typedef struct {
     bool systemd;
     bool verbose;
     char* timeout;
+    char* user_group;
+    char* mode;
 } opts_t;
 
 // run-time config (post-processed version of opts_t)
@@ -53,6 +56,9 @@ typedef struct {
     bool systemd;
     bool verbose;
     int timeout;
+    char *user;
+    char* group;
+    char* mode;
 } runopts_t;
 
 int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
@@ -63,6 +69,9 @@ int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
       exit_time = msec_after(timeval_now(), runopts->timeout * 1000);
       timed_exit = true;
   }
+
+  // let user release the enter key after running the command
+  usleep(250000);
 
   int i, ret, n_kbs;
   keyboard_t kbs[MAX_KBS];
@@ -176,9 +185,54 @@ int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
 }
 
 
-int main_serve(const runopts_t *runopts, char *host, char *port){
-    usleep(250000);
+int main_serve_unix(const runopts_t *runopts, char *socket, char *lock){
+    // obtain a file lock and bind to the socket path
+    int lockfd;
+    int sockfd = unix_socket_open(socket, lock, &lockfd);
+    if(sockfd < 0){
+        return 1;
+    }
 
+    int retval = -1;
+
+    // set permissions, defaulting to exclusive user access
+    char *mode = runopts->mode ? runopts->mode : "600";
+    int ret = set_file_perms(socket, runopts->user, runopts->group, mode);
+    if(ret != 0){
+        goto cu_socket;
+    }
+
+    // start listening
+    ret = listen(sockfd, 5);
+    if(ret != 0){
+        perror("listen");
+        goto cu_socket;
+    }
+
+    kbd_server_t server = {
+        .accept_fd = sockfd,
+    };
+
+    app_t server_app = {
+        .send=server_send_event,
+        .prep_select=server_prep_select,
+        .handle_select=server_handle_select,
+    };
+
+    retval = serve_loop(runopts, server_app, &server);
+
+    for(size_t i = 0; i < server.nclients; i++){
+        close(server.clients[i]);
+    }
+
+cu_socket:
+    unix_socket_close(sockfd, lockfd);
+
+    return retval;
+}
+
+
+int main_serve_tcp(const runopts_t *runopts, char *host, char *port){
     kbd_server_t server = {0};
     app_t server_app = {
         .send=server_send_event,
@@ -208,7 +262,6 @@ int send_event_locally(void *data, struct input_event ev){
 }
 
 int main_local(const runopts_t *runopts){
-    usleep(250000);
     int out_fd = open_output();
     if (out_fd < 0) {
         fprintf(stderr, "couldn't open output\n");
@@ -233,27 +286,21 @@ int first_newline(char *string, int maxlen){
     return -1;
 }
 
-int main_connect(const runopts_t *runopts, char *host, char *port){
+// read from a file descriptor; we don't care what kind
+int main_read(const runopts_t *runopts, int fd){
     int out_fd = open_output();
     if (out_fd < 0) {
         fprintf(stderr, "couldn't open output\n");
         return 1;
     }
 
-    int sock = gai_open(host, port, false);
-    if (sock < 0) {
-        fprintf(stderr, "couldn't open output\n");
-        close(out_fd);
-        return 1;
-    }
-
-    int retval = 0;
-
     if(runopts->systemd){
         sd_notify(0, "READY=1");
     }
 
-    // just loop over reading from the socket
+    int retval = 0;
+
+    // just loop over reading from the file descriptor
     char buffer[1024];
     size_t blen = 0;
     while(keep_going){
@@ -263,7 +310,7 @@ int main_connect(const runopts_t *runopts, char *host, char *port){
         }
 
         // read in up to half of the buffer
-        ssize_t rlen = read(sock, &buffer[blen], sizeof(buffer) / 2);
+        ssize_t rlen = read(fd, &buffer[blen], sizeof(buffer) / 2);
         if(rlen == -1){
             if(errno == EINTR){
                 continue;
@@ -274,7 +321,7 @@ int main_connect(const runopts_t *runopts, char *host, char *port){
         }
         if(rlen == 0){
             // normal shutdown on other end
-            fprintf(stderr, "server shut down\n");
+            fprintf(stderr, "event stream closed\n");
             break;
         }
         blen += rlen;
@@ -313,24 +360,46 @@ int main_connect(const runopts_t *runopts, char *host, char *port){
         sd_notify(0, "STOPPING=1");
     }
 
-    close(sock);
     close(out_fd);
+
+    return retval;
+}
+
+int main_connect(const runopts_t *runopts, char *host, char *port){
+
+    int sock = gai_open(host, port, false);
+    if (sock < 0) {
+        fprintf(stderr, "couldn't open output\n");
+        return 1;
+    }
+
+    int retval = main_read(runopts, sock);
+
+    close(sock);
 
     return retval;
 }
 
 void print_help(void){
     printf(
-        "usage: sdiol local              # modify local keyboards\n"
-        "usage: sdiol serve [host] port  # serve local keyboard on network\n"
-        "usage: sdiol connect host port  # read from a network keyboard\n"
+        "usage: sdiol local                  # modify local IO\n"
+        "usage: sdiol serve unix_socket      # serve IO over a unix socket\n"
+        "usage: sdiol read                   # read IO from STDIN\n"
         "\n"
-        "options:\n"
+        "# insecure, experimental features:\n"
+        "usage: sdiol serve-tcp [host] port  # serve IO over the network\n"
+        "usage: sdiol connect host port      # read IO from network\n"
+        "\n"
+        "general options:\n"
         " -h, --help           print this help text\n"
         " -c, --config FILE    set config file (default /etc/sdiol/conf.lua)\n"
         " -v, --verbose        print useful info while running\n"
         "     --timeout N      exit after N seconds (for testing)\n"
         "     --systemd        run as systemd Type=notify service\n"
+        "\n"
+        "options specific to sdiol serve:\n"
+        " --chown-socket USER:GROUP  set user and group of unix socket\n"
+        " --chmod-socket MODE        set mode of unix socket (default 600)\n"
     );
 }
 
@@ -339,41 +408,49 @@ int parse_opts(int argc, char **argv, int *nargs, char ***args, opts_t *opts){
     // configure cli options
     char *optstring = "hc:v";
     struct option longopts[] = {
-        {.name="config", .has_arg=1, .flag=NULL, .val='c'},
         {.name="help", .has_arg=0, .flag=NULL, .val='h'},
-        {.name="systemd", .has_arg=0, .flag=NULL, .val='d'},
+        {.name="config", .has_arg=1, .flag=NULL, .val='c'},
         {.name="verbose", .has_arg=0, .flag=NULL, .val='v'},
         {.name="timeout", .has_arg=1, .flag=NULL, .val='t'},
+        {.name="systemd", .has_arg=0, .flag=NULL, .val='d'},
+        {.name="chown-socket", .has_arg=1, .flag=NULL, .val='o'},
+        {.name="chmod-socket", .has_arg=1, .flag=NULL, .val='p'},
         {0},
     };
 
     // set default options
     *opts = (opts_t){
         .config="/etc/sdiol/conf.lua",
-        .systemd=false,
     };
 
     // read all options
     int opt;
     while((opt = getopt_long(argc, argv, optstring, longopts, NULL)) > -1){
         switch(opt){
-            case 'c':
-                opts->config = optarg;
-                break;
-            case 't':
-                opts->timeout = optarg;
-                break;
             case 'h':
                 print_help();
                 exit(0);
                 break;
-            case 'd':
-                opts->systemd = true;
+            case 'c':
+                opts->config = optarg;
                 break;
             case 'v':
                 opts->verbose = true;
                 break;
+            case 't':
+                opts->timeout = optarg;
+                break;
+            case 'd':
+                opts->systemd = true;
+                break;
+            case 'o':
+                opts->user_group = optarg;
+                break;
+            case 'm':
+                opts->mode = optarg;
+                break;
             default:
+                fprintf(stderr, "invalid option during parsing\n");
                 return -1;
         }
     }
@@ -383,15 +460,72 @@ int parse_opts(int argc, char **argv, int *nargs, char ***args, opts_t *opts){
     return 0;
 }
 
+// *user and *group will need to be freed
+int split_user_group(char *user_group, char **user, char **group){
+    if(user_group == NULL){
+        return 0;
+    }
+
+    // validate/split the string
+    char *colon = NULL;
+    char *c;
+    for(c = user_group; *c != '\0'; c++){
+        // ignore non-colon characters
+        if(*c != ':') continue;
+
+        if(colon != NULL){
+            fprintf(stderr, "invalid USER:GROUP: %s\n", user_group);
+            return -1;
+        }
+        colon = c;
+    }
+    if(colon == NULL){
+        fprintf(stderr, "invalid USER:GROUP: %s\n", user_group);
+        return -1;
+    }
+
+    // allocate new strings
+    size_t user_len = (uintptr_t)colon - (uintptr_t)user_group + 1;
+    *user = malloc(user_len);
+    if(!*user){
+        perror("malloc");
+        return -1;
+    }
+
+    char *gstart = colon + 1;
+    size_t group_len = (uintptr_t)c - (uintptr_t)(gstart) + 1;
+    *group = malloc(group_len);
+    if(!*group){
+        perror("malloc");
+        free(*user);
+        return -1;
+    }
+
+    // write into new strings
+    memset(*user, 0, user_len);
+    memcpy(*user, user_group, user_len - 1);
+
+    memset(*group, 0, group_len);
+    memcpy(*group, gstart, group_len - 1);
+
+    return 0;
+}
+
 // returns -1 on error
 int runopts_build(runopts_t *runopts, const opts_t *opts){
     *runopts = (runopts_t){0};
+
+    int ret;
+    ret = split_user_group(opts->user_group, &runopts->user, &runopts->group);
+    if(ret != 0){
+        return -1;
+    }
 
     // read config file
     if(opts->config){
         runopts->config = config_new(opts->config);
         if(!runopts->config){
-            return -1;
+            goto fail_user_group;
         }
     }
 
@@ -402,12 +536,31 @@ int runopts_build(runopts_t *runopts, const opts_t *opts){
     // pass along simple values
     runopts->systemd = opts->systemd;
     runopts->verbose = opts->verbose;
+    runopts->mode = opts->mode;
 
     return 0;
+
+fail_user_group:
+    free(runopts->user);
+    free(runopts->group);
+    return -1;
 }
 
 void runopts_free(runopts_t *runopts){
     config_free(runopts->config);
+    free(runopts->user);
+    free(runopts->group);
+}
+
+
+char *get_lock_path(char *socket){
+    // allocate a string big enough for "socket" + ".lock" + "\0"
+    size_t len = strlen(socket) + strlen(".lock");
+    char *lock = malloc(len + 1);
+    if(!lock) return NULL;
+
+    sprintf(lock, "%s.lock", socket);
+    return lock;
 }
 
 
@@ -452,6 +605,32 @@ int main(int argc, char **argv) {
         }
 
         if(!strcmp(args[0], "serve")){
+            if(nargs != 2){
+                goto help;
+            }
+            char *socket = args[1];
+            // build a lockfile to protect the unix socket
+            char *lock = get_lock_path(socket);
+            if(lock == NULL){
+                retval = 1;
+                goto cu_opts;
+            }
+            retval = main_serve_unix(&runopts, socket, lock);
+            // free the lockfile path string
+            free(lock);
+            goto cu_opts;
+        }
+
+        if(!strcmp(args[0], "read")){
+            if(nargs != 1){
+                goto help;
+            }
+            // stream results from stdin
+            retval = main_read(&runopts, 0);
+            goto cu_opts;
+        }
+
+        if(!strcmp(args[0], "serve-tcp")){
             char *port;
             char *host;
             if(nargs == 2){
@@ -463,7 +642,7 @@ int main(int argc, char **argv) {
             }else{
                 goto help;
             }
-            retval = main_serve(&runopts, host, port);
+            retval = main_serve_tcp(&runopts, host, port);
             goto cu_opts;
         }
 
