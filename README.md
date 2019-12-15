@@ -222,9 +222,12 @@ sure you get the correct permissions on your socket for your environment.
 encrypt the connection to the server, then on the server we will use `nc` to
 connect to the socket.  This leaves `sdiol` to simply read events from stdin:
 
-    ssh bob@myserver nc -U /tmp/sdiol.sock | sudo sdiol read
+    ssh bob@myserver nc -U /tmp/sdiol.sock </dev/null | sudo sdiol read
 
 And you're in business!
+
+(The `</dev/null` is to make sure that the command works ok with background
+execution, where trying to read from stdin may behave oddly)
 
 If a new client connects to the `sdiol` server, the first client will be
 disconnected.  In the future, `sdiol` will be able to maintain multiple client
