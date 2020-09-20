@@ -113,7 +113,6 @@ int set_file_perms(char *file, char *user, char *group, char *mode){
             return -1;
         }
 
-        printf("chown\n");
         ret = chown(file, uid, gid);
         if(ret != 0){
             perror(file);

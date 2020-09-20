@@ -33,7 +33,8 @@ int gai_open(const char* host, const char* service, bool server_side){
     struct addrinfo* p;
     for(p = ai; p != NULL; p = p->ai_next){
         struct sockaddr_in* sin = (struct sockaddr_in*)p->ai_addr;
-        printf("%s to ip addr %s\n", server_side ? "Binding" : "Connecting",
+        fprintf(stderr, "%s to ip addr %s\n",
+                server_side ? "Binding" : "Connecting",
                 inet_ntoa(sin->sin_addr));
         // create a socket
         out_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
@@ -66,7 +67,7 @@ int gai_open(const char* host, const char* service, bool server_side){
                 continue;
             }
         }else{
-            printf("connecting!\n");
+            fprintf(stderr, "connecting!\n");
             ret = connect(out_fd, p->ai_addr, p->ai_addrlen);
             if(ret != 0){
                 perror("connect");

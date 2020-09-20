@@ -346,7 +346,7 @@ int main_read(const runopts_t *runopts, int fd){
                 };
                 // print names of keypresses
                 if(runopts->verbose && ev.type == EV_KEY && ev.value == 1){
-                    printf("%s\n", get_input_name(ev.code));
+                    fprintf(stderr, "%s\n", get_input_name(ev.code));
                 }
                 send_event_locally(&out_fd, ev);
             }
@@ -380,8 +380,8 @@ int main_connect(const runopts_t *runopts, char *host, char *port){
     return retval;
 }
 
-void print_help(void){
-    printf(
+void print_help(FILE *dst){
+    fprintf(dst,
         "usage: sdiol local                  # modify local IO\n"
         "usage: sdiol serve unix_socket      # serve IO over a unix socket\n"
         "usage: sdiol read                   # read IO from STDIN\n"
@@ -428,7 +428,7 @@ int parse_opts(int argc, char **argv, int *nargs, char ***args, opts_t *opts){
     while((opt = getopt_long(argc, argv, optstring, longopts, NULL)) > -1){
         switch(opt){
             case 'h':
-                print_help();
+                print_help(stdout);
                 exit(0);
                 break;
             case 'c':
@@ -577,7 +577,7 @@ int main(int argc, char **argv) {
     char **args;
     opts_t opts = {0};
     if(parse_opts(argc, argv, &nargs, &args, &opts)){
-        print_help();
+        print_help(stderr);
         goto cu_names;
     }
 
@@ -658,7 +658,7 @@ int main(int argc, char **argv) {
     }
 
 help:
-    print_help();
+    print_help(stderr);
     retval = 1;
 
 cu_opts:
