@@ -26,7 +26,7 @@ target_include_directories(sdiol PRIVATE "${LUA_INCLUDE}" "${SYSTEMD_INCLUDE}")
 target_link_libraries(sdiol "${LUA_LIBRARY}" "${SYSTEMD_LIBRARY}")
 
 # complier flags
-target_compile_options(sdiol PRIVATE -Wall -Wno-unused-result)
+target_compile_options(sdiol PRIVATE -Wall -Wno-unused-result -Wno-stringop-truncation)
 
 # enable color output from compilier, unless it is explicitly disabled
 if("${COLORIZE_OUTPUT}" STREQUAL "")
