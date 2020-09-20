@@ -149,9 +149,12 @@ int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
             r->unresolved[(r->ur_start + r->ur_len++) % URMAX] = ev;
             // print names of keypresses
             if(runopts->verbose && ev.type == EV_KEY && ev.value == 1){
-                printf("%s\n", get_input_name(ev.code));
+                fprintf(stdout, "%s\n", get_input_name(ev.code));
             }
             while(resolve(r));
+          }else{
+              fprintf(stderr, "overflow!\n");
+              exit(1);
           }
         }else if(errno != EAGAIN){
           // close this keyboard and left-shift the remaining fds

@@ -30,6 +30,8 @@ typedef struct {
     key_action_t *tap;
     key_action_t *hold;
     dual_key_mode_t mode;
+    long hold_ms;
+    long double_tap_ms;
 } key_dual_t;
 
 enum key_type {

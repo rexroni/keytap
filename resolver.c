@@ -15,6 +15,25 @@ void resolver_init(struct resolver *r, key_action_t *root_keymap,
     r->current_keymap = root_keymap;
 }
 
+
+// call on each "natural" TAP resolution (which happens upon key release)
+static void track_last_tap(struct resolver *r, struct input_event release_ev){
+    r->last_tap_code = release_ev.code;
+    r->last_tap_time = release_ev.time;
+}
+
+// call on each non-natural-TAP dual-key resolution
+static void invalidate_last_tap(struct resolver *r){
+    r->last_tap_code = -1;
+}
+
+// call on each incoming keypress
+static void maybe_invalidate_last_tap(struct resolver *r, int code){
+    if(code != r->last_tap_code){
+        r->last_tap_code = -1;
+    }
+}
+
 /* if two sources of a single key are present, send events according to the
    logical OR of those keys.  Also drop EV_SYN events if we detect that no real
    key events have been sent since the last EV_SYN event we sent. */
@@ -70,6 +89,7 @@ void resolver_send_filtered(struct resolver *r, struct input_event ev){
 
 /* Given a pressed dual-key X, check unresolved events to decide tap or hold.
    The first condition met from the list below indicates the correct mode:
+     - X has been double-tapped (tap mode)
      - X has timed out (hold mode)
      - X has been released (tap mode)
      - another key has been pressed and released (hold mode)
@@ -79,16 +99,28 @@ enum waveform {
     WAVEFORM_HOLD,
     WAVEFORM_NONE_YET,
 };
-enum waveform check_waveform(const struct resolver *r, struct input_event ev,
-        dual_key_mode_t mode){
-    struct timeval now = timeval_now();
+enum waveform check_waveform(struct resolver *r, struct input_event ev,
+        key_dual_t dual){
+    long dtms = dual.double_tap_ms;
+    // check if double taps are disabled
+    if(dtms > -1){
+        // check for double tap conditions
+        if(r->last_tap_code == ev.code){
+            if(dtms == 0 || msec_diff(ev.time, r->last_tap_time) < dtms){
+                // not a natural tap
+                invalidate_last_tap(r);
+                return WAVEFORM_TAP;
+            }
+        }
+    }
 
     // is the keypress old enough that we know it is a modifier?
-    if(msec_diff(now, ev.time) > 200){
+    if(msec_diff(timeval_now(), ev.time) > dual.hold_ms){
+        invalidate_last_tap(r);
         return WAVEFORM_HOLD;
     }
     // in TIMEOUT_ONLY, we don't have to check any further
-    else if(mode == DUAL_MODE_TIMEOUT_ONLY){
+    if(dual.mode == DUAL_MODE_TIMEOUT_ONLY){
         return WAVEFORM_NONE_YET;
     }
 
@@ -97,10 +129,13 @@ enum waveform check_waveform(const struct resolver *r, struct input_event ev,
         struct input_event ev2 = r->unresolved[(r->ur_start + i) % URMAX];
         // was the main key released?
         if(ev2.value == 0 && ev2.code == ev.code){
+            track_last_tap(r, ev2);
             return WAVEFORM_TAP;
         }
-        // in HOLD_ON_ROLLOVER mode, any key event but main-key-release is HOLD
-        else if(mode == DUAL_MODE_HOLD_ON_ROLLOVER && ev2.type == EV_KEY){
+        // in HOLD_ON_ROLLOVER mode, any other keypress is HOLD
+        else if(dual.mode == DUAL_MODE_HOLD_ON_ROLLOVER
+                && ev2.type == EV_KEY && ev2.value == 1){
+            invalidate_last_tap(r);
             return WAVEFORM_HOLD;
         }
         // record the pressed state of the key
@@ -109,6 +144,7 @@ enum waveform check_waveform(const struct resolver *r, struct input_event ev,
         }
         // some other key was pressed and released, main key is a HOLD
         else if(ev2.value == 0 && ev2.code < KEY_MAX && keys_pressed[ev2.code]){
+            invalidate_last_tap(r);
             return WAVEFORM_HOLD;
         }
     }
@@ -202,6 +238,7 @@ bool resolve(struct resolver *r){
         }
         // key pressed
         else if(ev.value == 1){
+            maybe_invalidate_last_tap(r, ev.code);
             // printf("%.10s of %.10s\n", "press", get_input_name(ev.code));
             // get the key action from the map
             key_action_t *ka = key_action_get(r->current_keymap, ev.code);
@@ -213,7 +250,7 @@ bool resolve(struct resolver *r){
                     resolved = true;
                     break;
                 case KT_DUAL:
-                    switch(check_waveform(r, ev, ka->key.dual.mode)){
+                    switch(check_waveform(r, ev, ka->key.dual)){
                         // .tap and .hold must not be KT_DUALs
                         case WAVEFORM_TAP:
                             do_keypress(r, ev, ka->key.dual.tap);
@@ -225,7 +262,7 @@ bool resolve(struct resolver *r){
                             break;
                         case WAVEFORM_NONE_YET:
                             // wait for a timeout to resolve this event
-                            r->resolvable_time = msec_after(ev.time, 200);
+                            r->resolvable_time = msec_after(ev.time, ka->key.dual.hold_ms);
                             r->use_resolvable_time=true;
                             break;
                     }

@@ -9,7 +9,7 @@ serving.  Possible use-cases include:
 * Configuring left shift key to be a shift key when held or an escape key when
 tapped.
 
-* Configuring the f key to be an f when tapped or to convert the h/j/k/l
+* Configuring the f key to be an f when tapped or to modify the h/j/k/l
 keys to behave like arrow keys while f is held.
 
 * Configure multiple keyboards with different keybindings.
@@ -104,6 +104,9 @@ verify the following behaviors:
 * Holding f does not type an f, but instead turns h/j/k/l into arrow keys and
 u/i into left/right parentheses for as long as you hold f
 
+* Quickly double tapping f (but holding the second press) will auto-repeat the
+f key for as long as you hold the second press
+
 * All other keys behave normally
 
 
@@ -145,30 +148,59 @@ and `ignore_keyboard()` functions can be in the configuration, and the first
 REGEX to match a keyboard name determines the behavior for that keyboard.
 
 
-### `dual_key(TAP, HOLD [, MODE])`
+### `dual_key(TAP, HOLD [, CONFIG]])`
 
 A key which takes one of two actions based on how long it is held.  Both TAP
 and HOLD should be actions.  Note that TAP cannot be a keymap action, and
 neither TAP nor HOLD can be nested `dual_key()` actions.
 
-A key is "held" if it is pressed for more than 200ms (not yet configurable) or
-if some second key is both pressed and released before the first key is pressed
-(press A, press B, release B, release A).  The in-between case (press A, press
-B, release A, release B) is called "rollover", and its behavior is configurable
-using the optional MODE argument.  MODE can be one of:
+Dual-mode keys are very flexible.  They are configured by passing a lua table
+of configurations as the optional third argument.  The allowable keys in the
+dictionary are as follows:
 
-* `TAP_ON_ROLLOVER` (the default) should be used for making dual-mode keys out
-of normal keys, like f.  When you press f, press another key, release f, and
-release the other key, (a "rollover" situation in typing) you will get the
-behavior specified by the TAP argument (probably a normal f)
+* `HOLD_MS`: a number of milliseconds after which a pressed dual-mode key
+will take on its HOLD behavior (default: `200`).
 
-* `HOLD_ON_ROLLOVER` should generally be used for making dual-mode keys out of
-modifier keys, like shift.  When you press shift, press another key, release
-shift, and release the other key, you will get the behavior specified by the
-HOLD argument (probably apply shift to the second key).
+* `DOUBLE_TAP_MS`: the maximum number of milliseconds between when a key is
+released and when it is re-pressed for it to count as a double tap (default:
+`300`).  Set to `0` to allow for infinite time, or to `-1` to disable double
+tap behavior.  Double tapping a dual-mode key causes the second keypress to
+take on its TAP behavior, regardless of how long it is held.  This would be
+desirable if f were a dual-mode key, but you wanted to get the automatic key
+repeat behavior of holding a normal (non-dual-mode) f key, such as to page
+though a very long file in `less`.
 
-* `TIMEOUT_ONLY` means that the only way to trigger the HOLD behavior is with
-the 200ms timeout.
+* `MODE`: By default, a key is considered "held" if it is pressed for longer
+than its `HOLD_TIMEOUT` (200ms by default) or if some second key is both
+pressed and released before the first key is pressed (press A, press B, release
+B, release A).  The in-between case (press A, press B, release A, release B) is
+called "rollover", and its behavior is configurable using the optional MODE
+argument.  MODE can be one of:
+
+  * `TAP_ON_ROLLOVER` (the default) should be used for making dual-mode keys
+    out of normal keys, like f.  When you press f, press another key, release
+    f, and release the other key, (a "rollover" situation in typing) you will
+    get the behavior specified by the TAP argument (probably a normal f)
+
+  * `HOLD_ON_ROLLOVER` should generally be used for making dual-mode keys out
+    of modifier keys, like shift.  When you press shift, press another key,
+    release shift, and release the other key, you will get the behavior
+    specified by the HOLD argument (probably apply shift to the second key).
+
+  * `TIMEOUT_ONLY` means that the only way to trigger the HOLD behavior is with
+    the 200ms timeout.
+
+So a customized dual-mode key action for shift might be created like this:
+
+    root_keymap = {
+        -- Modifiers like shift work better with HOLD_ON_ROLLOVER, and my
+        -- pinky is slow, so increase the limits for holds and double taps.
+        KEY_LEFTSHIFT = dual_key(KEY_SHIFT, KEY_ESCAPE, {
+            MODE = HOLD_ON_ROLLOVER,
+            HOLD_MS = 300,
+            DOUBLE_TAP_MS = 400,
+        }),
+    }
 
 
 ### `macro(...)`, `shift(...)`, `ctrl(...)`

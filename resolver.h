@@ -8,7 +8,7 @@
 #include "config.h"
 
 // the maximum number of unresolved events before we start dropping events
-#define URMAX 32
+#define URMAX 1024
 
 // a special value in release_map which indicates we should reset the keymap
 #define RESET_KEYMAP (KEY_MAX + 1)
@@ -47,6 +47,10 @@ struct resolver {
        what is correct behavior anyway.  For now, the simple solution is
        sufficient. */
     key_action_t *current_keymap;
+
+    // track double-tapping to allow for repeats of dual-mode key TAP behaviors
+    int last_tap_code;
+    struct timeval last_tap_time;
 };
 
 void resolver_init(struct resolver *r, key_action_t *root_keymap,

@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include <lauxlib.h>
 
@@ -106,6 +107,8 @@ int key_action_dup(const key_action_t *in, key_action_t *out){
             // match type and mode
             out->type = in->type;
             out->key.dual.mode = in->key.dual.mode;
+            out->key.dual.hold_ms = in->key.dual.hold_ms;
+            out->key.dual.double_tap_ms = in->key.dual.double_tap_ms;
             // match tap
             out->key.dual.tap = malloc(sizeof(*out->key.dual.tap));
             if(!out->key.dual.tap) goto fail;
@@ -214,8 +217,8 @@ int extract_table_to_key_map(lua_State *L, int table_idx, key_action_t *map){
                 fprintf(stderr, "no key with name %s\n", name);
                 return -1;
             }
-        }else if(lua_isnumber(L, -2)){
-            lua_Number n = lua_tonumber(L, -2);
+        }else if(lua_isinteger(L, -2)){
+            lua_Integer n = lua_tointeger(L, -2);
             key = (int)n;
         }else{
             fprintf(stderr,
@@ -248,8 +251,8 @@ int copy_to_key_action(lua_State *L, int idx, key_action_t *ka){
     }
 
     // simple key type?
-    if(lua_isnumber(L, idx)){
-        lua_Number n = lua_tonumber(L, idx);
+    if(lua_isinteger(L, idx)){
+        lua_Integer n = lua_tointeger(L, idx);
 
         // validate
         if(n < 0 || n >= KEY_MAX){
@@ -326,8 +329,8 @@ int append_simple_key_to_macro(int n, key_macro_t **tail){
 int append_copy_to_macro(lua_State *L, int idx, key_macro_t **tail){
 
     // simple key type?
-    if(lua_isnumber(L, idx)){
-        lua_Number n = lua_tonumber(L, idx);
+    if(lua_isinteger(L, idx)){
+        lua_Integer n = lua_tointeger(L, idx);
         return append_simple_key_to_macro(n, tail);
     }
 
@@ -573,6 +576,123 @@ fail:
     return lua_error(L);
 }
 
+#define DUAL_KEY_CONFIG_BAD_TYPE -1
+#define DUAL_KEY_CONFIG_BAD_TYPE_MSG \
+    "dual_key() argument 3 must a config table. Allowed keys are\n" \
+    " MODE, HOLD_MS, and DOUBLE_TAP_MS."
+
+#define DUAL_KEY_INVALID_MODE -2
+#define DUAL_KEY_INVALID_MODE_MSG \
+    "CONFIG.MODE in dual_key() must have a value which is one of\n" \
+    "TAP_ON_ROLLOVER, HOLD_ON_ROLLOVER, or TIMEOUT_ONLY."
+
+#define DUAL_KEY_INVALID_HOLD_MS -3
+#define DUAL_KEY_INVALID_HOLD_MS_MSG \
+    "CONFIG.HOLD_MS in dual_key() must be a positive integer."
+
+#define DUAL_KEY_INVALID_DOUBLE_TAP_MS -4
+#define DUAL_KEY_INVALID_DOUBLE_TAP_MS_MSG \
+    "CONFIG.DOUBLE_TAP_MS in dual_key() must be a positive integer or 0 or -1"
+
+// return a negative error code on failure, 0 on success
+int read_dual_key_config(
+    lua_State *L,
+    int config_idx,
+    dual_key_mode_t *mode_out,
+    long *hold_ms_out,
+    long *double_tap_ms_out
+){
+    int error_code = DUAL_KEY_CONFIG_BAD_TYPE;
+
+    // deprecated support for MODE as the third arg
+    if(lua_isinteger(L, 3)){
+        lua_Integer mode = lua_tointeger(L, 3);
+        switch(mode){
+            case DUAL_MODE_TAP_ON_ROLLOVER:
+            case DUAL_MODE_HOLD_ON_ROLLOVER:
+            case DUAL_MODE_TIMEOUT_ONLY:
+                *mode_out = mode;
+                return 0;
+        }
+        // invalid number as deprecated MODE argument
+        return error_code;
+    }
+
+    // CONFIG arg must be a table
+    if(!lua_istable(L, 3)) return error_code;
+
+    // iterate through keys in the table
+    lua_pushnil(L);
+    while(lua_next(L, config_idx) != 0){
+
+        // key is at index -2, value is at index -1
+
+        if(!lua_isstring(L, -2)){
+            // all keys must be strings
+            error_code = DUAL_KEY_CONFIG_BAD_TYPE;
+            goto fail_iter;
+        }
+
+        size_t keylen;
+        const char *key = lua_tolstring(L, -2, &keylen);
+        if(strncmp("MODE", key, keylen) == 0){
+            if(!lua_isinteger(L, -1)){
+                error_code = DUAL_KEY_INVALID_MODE;
+                goto fail_iter;
+            }
+            lua_Integer n = lua_tointeger(L, -1);
+            switch(n){
+                case DUAL_MODE_TAP_ON_ROLLOVER:
+                case DUAL_MODE_HOLD_ON_ROLLOVER:
+                case DUAL_MODE_TIMEOUT_ONLY:
+                    *mode_out = n;
+                    break;
+                default:
+                    error_code = DUAL_KEY_INVALID_MODE;
+                    goto fail_iter;
+            }
+        }else if(strncmp("HOLD_MS", key, keylen) == 0){
+            if(!lua_isinteger(L, -1)){
+                error_code = DUAL_KEY_INVALID_HOLD_MS;
+                goto fail_iter;
+            }
+            lua_Integer n = lua_tointeger(L, -1);
+            // hold_ms must be positive
+            if(n < 1){
+                error_code = DUAL_KEY_INVALID_HOLD_MS;
+                goto fail_iter;
+            }
+            *hold_ms_out = n;
+        }else if(strncmp("DOUBLE_TAP_MS", key, keylen) == 0){
+            if(!lua_isinteger(L, -1)){
+                error_code = DUAL_KEY_INVALID_DOUBLE_TAP_MS;
+                goto fail_iter;
+            }
+            lua_Integer n = lua_tointeger(L, -1);
+            // hold_ms must be positive, 0, or -1
+            if(n < -1){
+                error_code = DUAL_KEY_INVALID_DOUBLE_TAP_MS;
+                goto fail_iter;
+            }
+            *double_tap_ms_out = n;
+        }else{
+            // unrecognized key
+            goto fail_iter;
+        }
+
+        // remove the value
+        lua_pop(L, 1);
+        continue;
+
+    fail_iter:
+        lua_pop(L, 2);
+        return error_code;
+    }
+    // lua_next() removes the key at the very end
+
+    return 0;
+}
+
 int lua_dual_key(lua_State *L){
     // check the number of arguments
     int nargs = lua_gettop(L);
@@ -594,8 +714,10 @@ int lua_dual_key(lua_State *L){
     }
 
     // validate args
-    if(tap.type == KT_DUAL){
-        lua_pushliteral(L, "dual_key() argument 1 cannot be another dual_key");
+    if(tap.type == KT_DUAL || tap.type == KT_MAP){
+        lua_pushliteral(L,
+            "dual_key() argument 1 cannot be another dual_key or a keymap"
+        );
         goto fail_hold;
     }
     if(hold.type == KT_DUAL){
@@ -603,23 +725,33 @@ int lua_dual_key(lua_State *L){
         goto fail_hold;
     }
 
-    #define ARG3_MSG \
-        "dual_key() argument 3 must be one of: \n" \
-        "    TAP_ON_ROLLOVER, HOLD_ON_ROLLOVER, or TIMEOUT_ONLY."
-    if(nargs > 2 && !lua_isnumber(L, 3)){
-        lua_pushliteral(L, ARG3_MSG);
-        goto fail_tap;
-    }
+    // defaults
     dual_key_mode_t mode = DUAL_MODE_TAP_ON_ROLLOVER;
+    long hold_ms = 200;
+    long double_tap_ms = 300;
+
     if(nargs > 2){
-        mode = lua_tonumber(L, 3);
-        switch(mode){
-            case DUAL_MODE_TAP_ON_ROLLOVER:
-            case DUAL_MODE_HOLD_ON_ROLLOVER:
-            case DUAL_MODE_TIMEOUT_ONLY:
-                break;
+        int e = read_dual_key_config(L, 3, &mode, &hold_ms, &double_tap_ms);
+        switch(e){
+            case 0: break;
+
+            case DUAL_KEY_INVALID_MODE:
+                lua_pushliteral(L, DUAL_KEY_INVALID_MODE_MSG);
+                goto fail_hold;
+
+            case DUAL_KEY_INVALID_HOLD_MS:
+                lua_pushliteral(L, DUAL_KEY_INVALID_HOLD_MS_MSG);
+                goto fail_hold;
+
+            case DUAL_KEY_INVALID_DOUBLE_TAP_MS:
+                lua_pushliteral(L, DUAL_KEY_INVALID_DOUBLE_TAP_MS_MSG);
+                goto fail_hold;
+
+            case DUAL_KEY_CONFIG_BAD_TYPE:
             default:
-                lua_pushliteral(L, ARG3_MSG);
+                lua_pushliteral(L, DUAL_KEY_CONFIG_BAD_TYPE_MSG);
+                goto fail_hold;
+
         }
     }
 
@@ -656,6 +788,8 @@ int lua_dual_key(lua_State *L){
     *ka->key.dual.tap = tap;
     *ka->key.dual.hold = hold;
     ka->key.dual.mode = mode;
+    ka->key.dual.hold_ms = hold_ms;
+    ka->key.dual.double_tap_ms = double_tap_ms;
 
     return 1;
 
@@ -814,7 +948,7 @@ void grab_free(grab_t *grab){
 void add_global(void *arg, const char *name, uint16_t val){
     lua_State *L = arg;
     // map a key_name to its numeric value as a lua global variable
-    lua_pushnumber(L, val);
+    lua_pushinteger(L, val);
     lua_setglobal(L, name);
 }
 
@@ -842,11 +976,11 @@ int set_lua_globals(config_t *config){
     lua_setglobal(L, "dual_key");
 
     // make dual_key modes available
-    lua_pushnumber(L, DUAL_MODE_TAP_ON_ROLLOVER);
+    lua_pushinteger(L, DUAL_MODE_TAP_ON_ROLLOVER);
     lua_setglobal(L, "TAP_ON_ROLLOVER");
-    lua_pushnumber(L, DUAL_MODE_HOLD_ON_ROLLOVER);
+    lua_pushinteger(L, DUAL_MODE_HOLD_ON_ROLLOVER);
     lua_setglobal(L, "HOLD_ON_ROLLOVER");
-    lua_pushnumber(L, DUAL_MODE_TIMEOUT_ONLY);
+    lua_pushinteger(L, DUAL_MODE_TIMEOUT_ONLY);
     lua_setglobal(L, "TIMEOUT_ONLY");
 
     lua_pushcfunction(L, lua_grab_keyboard);
