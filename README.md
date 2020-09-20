@@ -167,6 +167,9 @@ modifier keys, like shift.  When you press shift, press another key, release
 shift, and release the other key, you will get the behavior specified by the
 HOLD argument (probably apply shift to the second key).
 
+* `TIMEOUT_ONLY` means that the only way to trigger the HOLD behavior is with
+the 200ms timeout.
+
 
 ### `macro(...)`, `shift(...)`, `ctrl(...)`
 
