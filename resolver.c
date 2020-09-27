@@ -101,21 +101,20 @@ enum waveform {
 };
 enum waveform check_waveform(struct resolver *r, struct input_event ev,
         key_dual_t dual){
-    long dtms = dual.double_tap_ms;
-    // check if double taps are disabled
-    if(dtms > -1){
-        // check for double tap conditions
-        if(r->last_tap_code == ev.code){
-            if(dtms == 0 || msec_diff(ev.time, r->last_tap_time) < dtms){
-                // not a natural tap
-                invalidate_last_tap(r);
-                return WAVEFORM_TAP;
+    // is the keypress old enough to be a hold?
+    if(msec_diff(timeval_now(), ev.time) > dual.hold_ms){
+        // only on time-based holds do we check doubletap behavior.
+        long dtms = dual.double_tap_ms;
+        if(dtms > -1){
+            // check for double tap conditions
+            if(r->last_tap_code == ev.code){
+                if(dtms == 0 || msec_diff(ev.time, r->last_tap_time) < dtms){
+                    // not a natural tap
+                    invalidate_last_tap(r);
+                    return WAVEFORM_TAP;
+                }
             }
         }
-    }
-
-    // is the keypress old enough that we know it is a modifier?
-    if(msec_diff(timeval_now(), ev.time) > dual.hold_ms){
         invalidate_last_tap(r);
         return WAVEFORM_HOLD;
     }
@@ -133,17 +132,19 @@ enum waveform check_waveform(struct resolver *r, struct input_event ev,
             return WAVEFORM_TAP;
         }
         // in HOLD_ON_ROLLOVER mode, any other keypress is HOLD
-        else if(dual.mode == DUAL_MODE_HOLD_ON_ROLLOVER
+        if(dual.mode == DUAL_MODE_HOLD_ON_ROLLOVER
                 && ev2.type == EV_KEY && ev2.value == 1){
             invalidate_last_tap(r);
             return WAVEFORM_HOLD;
         }
-        // record the pressed state of the key
-        else if(ev2.value == 1 && ev2.code < KEY_MAX){
+        // on press, record the pressed state of the key
+        if(ev2.value == 1 && ev2.code < KEY_MAX){
             keys_pressed[ev2.code] = 1;
+            // any secondary press prevents a doubletap
+            invalidate_last_tap(r);
         }
         // some other key was pressed and released, main key is a HOLD
-        else if(ev2.value == 0 && ev2.code < KEY_MAX && keys_pressed[ev2.code]){
+        if(ev2.value == 0 && ev2.code < KEY_MAX && keys_pressed[ev2.code]){
             invalidate_last_tap(r);
             return WAVEFORM_HOLD;
         }

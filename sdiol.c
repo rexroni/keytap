@@ -149,7 +149,9 @@ int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
             r->unresolved[(r->ur_start + r->ur_len++) % URMAX] = ev;
             // print names of keypresses
             if(runopts->verbose && ev.type == EV_KEY && ev.value == 1){
-                fprintf(stdout, "%s\n", get_input_name(ev.code));
+                fprintf(stdout, "%s press\n", get_input_name(ev.code));
+            }else if(runopts->verbose && ev.type == EV_KEY && ev.value == 0){
+                fprintf(stdout, "%s release\n", get_input_name(ev.code));
             }
             while(resolve(r));
           }else{

@@ -162,13 +162,13 @@ dictionary are as follows:
 will take on its HOLD behavior (default: `200`).
 
 * `DOUBLE_TAP_MS`: the maximum number of milliseconds between when a key is
-released and when it is re-pressed for it to count as a double tap (default:
-`300`).  Set to `0` to allow for infinite time, or to `-1` to disable double
-tap behavior.  Double tapping a dual-mode key causes the second keypress to
-take on its TAP behavior, regardless of how long it is held.  This would be
-desirable if f were a dual-mode key, but you wanted to get the automatic key
-repeat behavior of holding a normal (non-dual-mode) f key, such as to page
-though a very long file in `less`.
+released and when it is re-pressed for it to qualify as a possible double tap
+(default: `300`).  Set to `0` to allow for infinite time, or to `-1` to disable
+double tap behavior.  A double tap is when you press a dual-mode key twice in
+quick succession, holding it the second time.  This would be desirable if f
+were a dual-mode key, but you wanted to get the automatic key repeat behavior
+of holding a normal (non-dual-mode) f key, such as to page though a very long
+file in `less`.
 
 * `MODE`: By default, a key is considered "held" if it is pressed for longer
 than its `HOLD_TIMEOUT` (200ms by default) or if some second key is both
