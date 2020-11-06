@@ -9,6 +9,10 @@
 #include "config.h"
 #include "names.h"
 
+static int non_negative_idx(lua_State *L, int idx){
+    return idx < 0 ? lua_gettop(L) + idx : idx;
+}
+
 int copy_to_key_action(lua_State *L, int idx, key_action_t *ka);
 
 // An example lua allocator.
@@ -204,6 +208,7 @@ void fill_map(key_action_t *tgt, key_action_t *base){
 int extract_table_to_key_map(lua_State *L, int table_idx, key_action_t *map){
     // first key
     lua_pushnil(L);
+    table_idx = non_negative_idx(L, table_idx);
     while(lua_next(L, table_idx) != 0){
 
         // key is at index -2, value is at index -1
@@ -623,6 +628,7 @@ int read_dual_key_config(
 
     // iterate through keys in the table
     lua_pushnil(L);
+    config_idx = non_negative_idx(L, config_idx);
     while(lua_next(L, config_idx) != 0){
 
         // key is at index -2, value is at index -1
