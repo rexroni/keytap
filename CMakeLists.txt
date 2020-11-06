@@ -11,6 +11,7 @@ set(sources
     server.c
     time_util.c
     permissions.c
+    key_action.c
 )
 add_executable(sdiol ${sources})
 

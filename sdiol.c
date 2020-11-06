@@ -73,10 +73,14 @@ int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
   // let user release the enter key after running the command
   usleep(250000);
 
+  // late-init the resolvers in each of the grabs
+  for(grab_t *g = runopts->config->grabs; g; g = g->next){
+      resolver_init(&g->resolver, &g->map, app.send, app_data);
+  }
+
   int i, ret, n_kbs;
   keyboard_t kbs[MAX_KBS];
-  open_inputs(kbs, &n_kbs, runopts->config->grabs, app.send, app_data,
-          runopts->verbose);
+  open_inputs(kbs, &n_kbs, runopts->config->grabs, runopts->verbose);
   int inot = open_inotify();
 
   if (n_kbs == 0) {
@@ -143,7 +147,7 @@ int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
         struct input_event ev;
         ret = read(kbs[i].fd, &ev, sizeof(struct input_event));
         if (ret > 0){
-          struct resolver *r = &kbs[i].resolv;
+          struct resolver *r = &kbs[i].grab->resolver;
           // add event to unresolved, or drop it if there isn't space for it
           if(r->ur_len < URMAX){
             r->unresolved[(r->ur_start + r->ur_len++) % URMAX] = ev;
@@ -173,7 +177,7 @@ int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
 
     if (FD_ISSET(inot, &rd_fds)) {
       handle_inotify_events(inot, kbs, &n_kbs, runopts->config->grabs,
-              app.send, app_data, runopts->verbose);
+              runopts->verbose);
     }
   }
 

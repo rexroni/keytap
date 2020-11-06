@@ -59,12 +59,12 @@ int open_output() {
 }
 
 
-// check the linked list of grabs and return a root keymap if we should grab
-key_action_t *check_grabs(grab_t *grabs, const char *name){
+// check the linked list of grabs and return a grab that matches
+grab_t *check_grabs(grab_t *grabs, const char *name){
     for(grab_t *grab = grabs; grab != NULL; grab = grab->next){
         int ret = regexec(&grab->regex, name, 0, NULL, 0);
         if(ret != REG_NOMATCH){
-            return grab->ignore ? NULL : &grab->map;
+            return grab->ignore ? NULL : grab;
         }
     }
     return NULL;
@@ -72,7 +72,8 @@ key_action_t *check_grabs(grab_t *grabs, const char *name){
 
 // return true if we decided to grab the device
 static bool open_input(char *dev, grab_t *grabs, int *fd_out,
-        key_action_t **map_out, bool verbose){
+        grab_t **grab_out, bool verbose){
+    *grab_out = NULL;
     int fd = open(dev, O_RDWR);
     if (fd < 0) {
         fprintf(stderr, "%s: %s\n", dev, strerror(errno));
@@ -81,8 +82,8 @@ static bool open_input(char *dev, grab_t *grabs, int *fd_out,
 
     char buf[256];
     ioctl(fd, EVIOCGNAME(sizeof(buf)), buf);
-    key_action_t *map;
-    if((map = check_grabs(grabs, buf)) != NULL){
+    grab_t *grab;
+    if((grab = check_grabs(grabs, buf)) != NULL){
         if(verbose){
             printf("grabbing %s\n", buf);
         }
@@ -93,7 +94,7 @@ static bool open_input(char *dev, grab_t *grabs, int *fd_out,
             return false;
         } else {
             *fd_out = fd;
-            *map_out = map;
+            *grab_out = grab;
             return true;
         }
     }
@@ -103,8 +104,7 @@ static bool open_input(char *dev, grab_t *grabs, int *fd_out,
     return false;
 }
 
-void open_inputs(keyboard_t *kbs, int *n_kbs, grab_t *grabs, send_t send,
-        void *send_data, bool verbose){
+void open_inputs(keyboard_t *kbs, int *n_kbs, grab_t *grabs, bool verbose){
     *n_kbs = 0;
 
     char dev[512];
@@ -119,13 +119,13 @@ void open_inputs(keyboard_t *kbs, int *n_kbs, grab_t *grabs, send_t send,
 
         if(*n_kbs < MAX_KBS){
             int fd;
-            key_action_t *map;
-            if(!open_input(dev, grabs, &fd, &map, verbose))
+            grab_t *grab;
+            if(!open_input(dev, grabs, &fd, &grab, verbose))
                 continue;
 
             keyboard_t kb;
             kb.fd = fd;
-            resolver_init(&kb.resolv, map, send, send_data);
+            kb.grab = grab;
 
             kbs[(*n_kbs)++] = kb;
         }
@@ -134,7 +134,7 @@ void open_inputs(keyboard_t *kbs, int *n_kbs, grab_t *grabs, send_t send,
 }
 
 void handle_inotify_events(int inot, keyboard_t *kbs, int* n_kbs,
-        grab_t *grabs, send_t send, void *send_data, bool verbose){
+        grab_t *grabs, bool verbose){
     // most of this section is straight from `man 7 inotify`
     char buf[4096] __attribute__ ((aligned(__alignof__(struct inotify_event))));
     const struct inotify_event *event;
@@ -157,13 +157,13 @@ void handle_inotify_events(int inot, keyboard_t *kbs, int* n_kbs,
             char dev[512];
             snprintf(dev, sizeof(dev), "/dev/input/%s", event->name);
             int fd;
-            key_action_t *map;
-            if(!open_input(dev, grabs, &fd, &map, verbose))
+            grab_t *grab;
+            if(!open_input(dev, grabs, &fd, &grab, verbose))
                 continue;
 
             keyboard_t kb;
             kb.fd = fd;
-            resolver_init(&kb.resolv, map, send, send_data);
+            kb.grab = grab;
 
             kbs[(*n_kbs)++] = kb;
         }

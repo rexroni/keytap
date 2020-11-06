@@ -5,7 +5,7 @@
 #include <time.h>
 
 #include "app.h"
-#include "config.h"
+#include "key_action.h"
 
 // the maximum number of unresolved events before we start dropping events
 #define URMAX 1024
