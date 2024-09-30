@@ -341,124 +341,70 @@ fail:
 }
 
 // build a macro chain, wrapping it in SHIFT_PRESS ... SHIFT_RELEASE
-int lua_shift(lua_State *L){
-    // check the number of arguments
-    int nargs = lua_gettop(L);
-    if(nargs == 0){
-        lua_pushliteral(L, "shift() requires at least one argument");
-        goto fail;
-    }
-
-    // build a macro chain from all the arguments, starting with LEFTSHIFT (42)
-    key_macro_t *macro = key_macro_new(42, true);
-    if(!macro){
-        lua_pushliteral(L, "shift() failed to allocate memory");
-        goto fail;
-    }
-
-    key_macro_t **tail = &macro->next;
-    for(int i = 1; i <= nargs; i++){
-        // append a copy of the argument (as a macro) to the tail
-        int ret = append_copy_to_macro(L, i, tail);
-        if(ret < 0){
-            lua_pushliteral(L, "shift() failed to copy an argument");
-            goto fail_macro;
-        }
-
-        // find the new tail
-        while(*tail){
-            tail = &(*tail)->next;
-        }
-    }
-
-    // end by releasing the shift key
-    *tail = key_macro_new(42, false);
-    if(!*tail){
-        lua_pushliteral(L, "shift() failed to allocate memory");
-        goto fail;
-    }
-
-    // done with args
-    lua_pop(L, nargs);
-
-    // push a new key_action to the stack
-    if(lua_new_key_action(L)){
-        lua_pushliteral(L, "shift() failed to allocate memory");
-        goto fail_macro;
-    }
-    int ka_idx = lua_gettop(L);
-    key_action_t *ka = lua_touserdata(L, ka_idx);
-
-    ka->type = KT_MACRO;
-    ka->key.macro = macro;
-
-    return 1;
-
-fail_macro:
-    key_macro_free(macro);
-fail:
-    return lua_error(L);
+// build a macro chain, wrapping it in MOD_PRESS ... MOD_RELEASE
+#define DEF_LUA_MOD(name, num) \
+int lua_##name(lua_State *L){ \
+    /* check the number of arguments */ \
+    int nargs = lua_gettop(L); \
+    if(nargs == 0){ \
+        lua_pushliteral(L, #name "() requires at least one argument"); \
+        goto fail; \
+    } \
+\
+    /* build a macro chain from all the arguments, starting with mod press */ \
+    key_macro_t *macro = key_macro_new(num, true); \
+    if(!macro){ \
+        lua_pushliteral(L, #name "() failed to allocate memory"); \
+        goto fail; \
+    } \
+\
+    key_macro_t **tail = &macro->next; \
+    for(int i = 1; i <= nargs; i++){ \
+        /* append a copy of the argument (as a macro) to the tail */ \
+        int ret = append_copy_to_macro(L, i, tail); \
+        if(ret < 0){ \
+            lua_pushliteral(L, #name "() failed to copy an argument"); \
+            goto fail_macro; \
+        } \
+\
+        /* find the new tail */ \
+        while(*tail){ \
+            tail = &(*tail)->next; \
+        } \
+    } \
+\
+    /* end by releasing the mod key */ \
+    *tail = key_macro_new(num, false); \
+    if(!*tail){ \
+        lua_pushliteral(L, #name "() failed to allocate memory"); \
+        goto fail; \
+    } \
+\
+    /* done with args */ \
+    lua_pop(L, nargs); \
+\
+    /* push a new key_action to the stack */ \
+    if(lua_new_key_action(L)){ \
+        lua_pushliteral(L, #name "() failed to allocate memory"); \
+        goto fail_macro; \
+    } \
+    int ka_idx = lua_gettop(L); \
+    key_action_t *ka = lua_touserdata(L, ka_idx); \
+\
+    ka->type = KT_MACRO; \
+    ka->key.macro = macro; \
+\
+    return 1; \
+\
+fail_macro: \
+    key_macro_free(macro); \
+fail: \
+    return lua_error(L); \
 }
-
-// build a macro chain, wrapping it in CTRL_PRESS ... CTRL_RELEASE
-int lua_ctrl(lua_State *L){
-    // check the number of arguments
-    int nargs = lua_gettop(L);
-    if(nargs == 0){
-        lua_pushliteral(L, "ctrl() requires at least one argument");
-        goto fail;
-    }
-
-    // build a macro chain from all the arguments, starting with LEFTSHIFT (42)
-    key_macro_t *macro = key_macro_new(29, true);
-    if(!macro){
-        lua_pushliteral(L, "ctrl() failed to allocate memory");
-        goto fail;
-    }
-
-    key_macro_t **tail = &macro->next;
-    for(int i = 1; i <= nargs; i++){
-        // append a copy of the argument (as a macro) to the tail
-        int ret = append_copy_to_macro(L, i, tail);
-        if(ret < 0){
-            lua_pushliteral(L, "ctrl() failed to copy an argument");
-            goto fail_macro;
-        }
-
-        // find the new tail
-        while(*tail){
-            tail = &(*tail)->next;
-        }
-    }
-
-    // end by releasing the ctrl key
-    *tail = key_macro_new(29, false);
-    if(!*tail){
-        lua_pushliteral(L, "ctrl() failed to allocate memory");
-        goto fail;
-    }
-
-    // done with args
-    lua_pop(L, nargs);
-
-    // push a new key_action to the stack
-    if(lua_new_key_action(L)){
-        lua_pushliteral(L, "ctrl() failed to allocate memory");
-        goto fail_macro;
-    }
-    int ka_idx = lua_gettop(L);
-    key_action_t *ka = lua_touserdata(L, ka_idx);
-
-    ka->type = KT_MACRO;
-    ka->key.macro = macro;
-
-    return 1;
-
-fail_macro:
-    key_macro_free(macro);
-fail:
-    return lua_error(L);
-}
+DEF_LUA_MOD(shift, 42)
+DEF_LUA_MOD(ctrl, 29)
+DEF_LUA_MOD(alt, 56)
+DEF_LUA_MOD(meta, 125)
 
 #define DUAL_KEY_CONFIG_BAD_TYPE -1
 #define DUAL_KEY_CONFIG_BAD_TYPE_MSG \
@@ -687,15 +633,18 @@ fail:
 }
 
 int lua_print(lua_State *L){
-    while(lua_gettop(L) > 0){
+    int nargs = lua_gettop(L);
+    for(int i = 0; i < nargs; i++){
         // get the string
         size_t len;
-        const char *str = luaL_tolstring(L, lua_gettop(L), &len);
+        const char *str = luaL_tolstring(L, i+1, &len);
         printf("%.*s\t", (int)len, str);
-        // have to pop twice after luaL_tolstring
-        lua_pop(L, 2);
+        lua_pop(L, 1);
     }
     printf("\n");
+
+    // pop all the args too
+    lua_pop(L, nargs);
 
     // return nothing on the stack
     return 0;
@@ -856,6 +805,12 @@ int set_lua_globals(config_t *config){
 
     lua_pushcfunction(L, lua_ctrl);
     lua_setglobal(L, "ctrl");
+
+    lua_pushcfunction(L, lua_alt);
+    lua_setglobal(L, "alt");
+
+    lua_pushcfunction(L, lua_meta);
+    lua_setglobal(L, "meta");
 
     lua_pushcfunction(L, lua_dual_key);
     lua_setglobal(L, "dual_key");

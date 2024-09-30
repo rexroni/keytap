@@ -135,7 +135,8 @@ There are four types of actions:
 * a `dual_key()`, to indicate a key which can one of two actions based on
 whether it is tapped or held
 
-* a `macro()`, `shift()` or `ctrl()`, to indicate a sequence of keys
+* a `macro()`, `shift()`, `ctrl()`, `alt()`, or `meta()` to indicate a sequence
+  of keys
 
 * another keymap like MAP, to indicate that a key exposes an
 alternate keymapping on the keyboard
@@ -257,7 +258,7 @@ sure you get the correct permissions on your socket for your environment.
 encrypt the connection to the server, then on the server we will use `nc` to
 connect to the socket.  This leaves `sdiol` to simply read events from stdin:
 
-    ssh bob@myserver nc -U /tmp/sdiol.sock </dev/null | sudo sdiol read
+    ssh bob@myserver nc -U /run/sdiol.sock </dev/null | sudo sdiol read
 
 And you're in business!
 
