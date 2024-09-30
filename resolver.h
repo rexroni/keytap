@@ -23,17 +23,13 @@ struct resolver {
     struct input_event unresolved[URMAX];
     size_t ur_len;
     size_t ur_start;
+
+    // dedup inputs from multiple keyboards, logical ORing them together
+    int input_counts[KEY_MAX];
+
     /* when we decide how to treat a keypress, we have to remember what key to
        release.  This also implicitly maps out which keys are pressed. */
     int release_map[KEY_MAX];
-
-    /* filter out duplicate key-press events and duplicate key-release events
-       using a simple reference-count-like strategy.  Multiple keyboards (or
-       duplicate keys on the keyboard, or modifier keys which are a part of a
-       macro, etc) will be unified as a logical OR of sorts. */
-    int press_count_map[KEY_MAX];
-    // filter out extraneous syn events when no real events were sent
-    bool sent_something;
 
     /* If we have an unresolvable event, we mark the time that it will become
        resolvable by timeout */
@@ -55,6 +51,9 @@ struct resolver {
 
 void resolver_init(struct resolver *r, key_action_t *root_keymap,
         send_t send, void *send_data);
+
+// returns bool ok
+bool resolve_dedup_input(struct resolver *r, struct input_event ev);
 
 bool resolve(struct resolver *r);
 

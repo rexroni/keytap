@@ -61,136 +61,234 @@ typedef struct {
     char* mode;
 } runopts_t;
 
-int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
-  struct timeval exit_time;
-  bool timed_exit = false;
-  if(runopts->timeout > 0){
-      printf("preparing to exit after %d seconds\n", runopts->timeout);
-      exit_time = msec_after(timeval_now(), runopts->timeout * 1000);
-      timed_exit = true;
-  }
+typedef struct {
+    // the send cb we are wrapping
+    send_t send;
+    void *send_data;
+    bool verbose;
+    // dedup tracking
+    int press_count_map[KEY_MAX];
+    // EV_SYN tracking
+    bool sent_something;
+} send_dedup_t;
 
-  // let user release the enter key after running the command
-  usleep(250000);
-
-  // late-init the resolvers in each of the grabs
-  for(grab_t *g = runopts->config->grabs; g; g = g->next){
-      resolver_init(&g->resolver, &g->map, app.send, app_data);
-  }
-
-  int i, ret, n_kbs;
-  keyboard_t kbs[MAX_KBS];
-  open_inputs(kbs, &n_kbs, runopts->config->grabs, runopts->verbose);
-  int inot = open_inotify();
-
-  if (n_kbs == 0) {
-    fprintf(stderr, "couldn't open any inputs\n");
-    return 1;
-  }
-
-  int retval = 0;
-
-  // notify systemd we are up (if --systemd or -d was given)
-  if(runopts->systemd){
-    sd_notify(0, "READY=1");
-  }
-
-  fd_set rd_fds, wr_fds;
-  while (keep_going) {
-    FD_ZERO(&rd_fds);
-    FD_ZERO(&wr_fds);
-
-    int max_fd = -1;
-    if(app.prep_select){
-        max_fd = app.prep_select(app_data, &rd_fds, &wr_fds);
-    }
-
-    FD_SET(inot, &rd_fds);
-    if(inot > max_fd)
-        max_fd = inot;
-    for (i = 0; i < n_kbs; i++) {
-      FD_SET(kbs[i].fd, &rd_fds);
-      if (kbs[i].fd > max_fd)
-        max_fd = kbs[i].fd;
-    }
-
-    struct timeval time_till_exit;
-    struct timeval *timeout = NULL;
-    if(timed_exit){
-        time_till_exit = timeval_diff(exit_time, timeval_now());
-        timeout = &time_till_exit;
-    }
-
-    ret = select(1 + max_fd, &rd_fds, &wr_fds, NULL, timeout);
-    if(ret == -1){
-        if(errno == EINTR){
-            // signal interrupted us, restart loop
-            continue;
+/* if two sources of a single key are present, send events according to the
+   logical OR of those keys.  Also drop EV_SYN events if we detect that no real
+   key events have been sent since the last EV_SYN event we sent. */
+int send_dedup(void *data, struct input_event ev){
+    int retval = 0;
+    send_dedup_t *d = data;
+    if(ev.type == EV_KEY){
+        if(ev.code > KEY_MAX){
+            fprintf(stderr,
+                "invalid ev.code in send_dedup: %d\n",
+                ev.code
+            );
         }
-        perror("select");
-        retval = 1;
-        break;
-    }
-
-    if(app.handle_select){
-        app.handle_select(app_data, &rd_fds, &wr_fds);
-    }
-
-    // if we reached the timeout, exit
-    if(timeout && timeout->tv_sec == 0 && timeout->tv_usec == 0){
-        printf("exiting due to timeout\n");
-        break;
-    }
-
-    for (i = 0; i < n_kbs; i++) {
-      if (FD_ISSET(kbs[i].fd, &rd_fds)) {
-        struct input_event ev;
-        ret = read(kbs[i].fd, &ev, sizeof(struct input_event));
-        if (ret > 0){
-          struct resolver *r = &kbs[i].grab->resolver;
-          // add event to unresolved, or drop it if there isn't space for it
-          if(r->ur_len < URMAX){
-            r->unresolved[(r->ur_start + r->ur_len++) % URMAX] = ev;
-            // print names of keypresses
-            if(runopts->verbose && ev.type == EV_KEY && ev.value == 1){
-                fprintf(stdout, "%s press\n", get_input_name(ev.code));
-            }else if(runopts->verbose && ev.type == EV_KEY && ev.value == 0){
-                fprintf(stdout, "%s release\n", get_input_name(ev.code));
+        // key release event
+        else if(ev.value == 0){
+            if(d->press_count_map[ev.code] < 1){
+                fprintf(stderr,
+                    "invalid key release of %s in send_dedup\n",
+                    get_input_name(ev.code)
+                );
             }
-            while(resolve(r));
-          }else{
-              fprintf(stderr, "overflow!\n");
-              exit(1);
-          }
-        }else if(errno != EAGAIN){
-          // close this keyboard and left-shift the remaining fds
-          close(kbs[i].fd);
-          // TODO: do something to release any pressed keys here
-          size_t nkbs_after = MAX_KBS - i - 1;
-          memmove(&kbs[i], &kbs[i+1], sizeof(*kbs) * nkbs_after);
-          n_kbs--;
-          // don't skip the new i-th entry of kbs
-          i--;
+            // send event if this was the last key of this type released
+            else if(--d->press_count_map[ev.code] == 0){
+                if(d->verbose){
+                    fprintf(stdout,
+                        "emit %s release\n",
+                        get_input_name(ev.code)
+                    );
+                }
+                retval = d->send(d->send_data, ev);
+                d->sent_something = true;
+            }
         }
-      }
+        // key press event
+        else if(ev.value == 1){
+            // send event if this was the first key of this type pressed
+            if(d->press_count_map[ev.code]++ == 0){
+                if(d->verbose){
+                    fprintf(stdout,
+                        "emit %s press\n",
+                        get_input_name(ev.code)
+                    );
+                }
+                retval = d->send(d->send_data, ev);
+                d->sent_something = true;
+            }
+        }
+        // key repeat event
+        else if(ev.value == 2){
+            retval = d->send(d->send_data, ev);
+            d->sent_something = true;
+        }else{
+            fprintf(stderr,
+                "dropping invalid ev.value %d in send_dedup\n",
+                ev.value
+            );
+        }
+
+    }else if(ev.type == EV_SYN){
+        // only send the EV_SYN event if some other event was sent
+        if(d->sent_something){
+            retval = d->send(d->send_data, ev);
+            d->sent_something = false;
+        }
+
+    }else{
+        // other ev.types are passed through unchanged
+        retval = d->send(d->send_data, ev);
+        d->sent_something = true;
+    }
+    return retval;
+}
+
+int serve_loop(const runopts_t *runopts, app_t app, void *app_data){
+    struct timeval exit_time;
+    bool timed_exit = false;
+    if(runopts->timeout > 0){
+        printf("preparing to exit after %d seconds\n", runopts->timeout);
+        exit_time = msec_after(timeval_now(), runopts->timeout * 1000);
+        timed_exit = true;
     }
 
-    if (FD_ISSET(inot, &rd_fds)) {
-      handle_inotify_events(inot, kbs, &n_kbs, runopts->config->grabs,
-              runopts->verbose);
+    // let user release the enter key after running the command
+    usleep(250000);
+
+    // use one send_dedup_t on the output for all possible inputs
+    send_dedup_t deduper = { app.send, app_data, runopts->verbose };
+
+    // late-init the resolvers in each of the grabs
+    for(grab_t *g = runopts->config->grabs; g; g = g->next){
+        resolver_init(&g->resolver, &g->map, send_dedup, &deduper);
     }
-  }
 
-  if(runopts->systemd){
-      sd_notify(0, "STOPPING=1");
-  }
+    int i, ret, n_kbs;
+    keyboard_t kbs[MAX_KBS];
+    open_inputs(kbs, &n_kbs, runopts->config->grabs, runopts->verbose);
+    int inot = open_inotify();
 
-  for(int i = 0; i < n_kbs; i++){
-    close(kbs[i].fd);
-  }
-  close(inot);
+    if (n_kbs == 0) {
+        fprintf(stderr, "couldn't open any inputs\n");
+        return 1;
+    }
 
-  return retval;
+    int retval = 0;
+
+    // notify systemd we are up (if --systemd or -d was given)
+    if(runopts->systemd){
+        sd_notify(0, "READY=1");
+    }
+
+    fd_set rd_fds, wr_fds;
+    while (keep_going) {
+        FD_ZERO(&rd_fds);
+        FD_ZERO(&wr_fds);
+
+        int max_fd = -1;
+        if(app.prep_select){
+            max_fd = app.prep_select(app_data, &rd_fds, &wr_fds);
+        }
+
+        FD_SET(inot, &rd_fds);
+        if(inot > max_fd)
+            max_fd = inot;
+        for (i = 0; i < n_kbs; i++) {
+          FD_SET(kbs[i].fd, &rd_fds);
+          if (kbs[i].fd > max_fd)
+            max_fd = kbs[i].fd;
+        }
+
+        struct timeval time_till_exit;
+        struct timeval *timeout = NULL;
+        if(timed_exit){
+            time_till_exit = timeval_diff(exit_time, timeval_now());
+            timeout = &time_till_exit;
+        }
+
+        ret = select(1 + max_fd, &rd_fds, &wr_fds, NULL, timeout);
+        if(ret == -1){
+            if(errno == EINTR){
+                // signal interrupted us, restart loop
+                continue;
+            }
+            perror("select");
+            retval = 1;
+            break;
+        }
+
+        if(app.handle_select){
+            app.handle_select(app_data, &rd_fds, &wr_fds);
+        }
+
+        // if we reached the timeout, exit
+        if(timeout && timeout->tv_sec == 0 && timeout->tv_usec == 0){
+            printf("exiting due to timeout\n");
+            break;
+        }
+
+        for (i = 0; i < n_kbs; i++) {
+            if (FD_ISSET(kbs[i].fd, &rd_fds)) {
+                struct input_event ev;
+                ret = read(kbs[i].fd, &ev, sizeof(struct input_event));
+                if (ret < 1){
+                    if(errno == EAGAIN) continue;
+                    // close this keyboard and left-shift the remaining fds
+                    close(kbs[i].fd);
+                    // TODO: do something to release any pressed keys here
+                    size_t nkbs_after = MAX_KBS - i - 1;
+                    memmove(&kbs[i], &kbs[i+1], sizeof(*kbs) * nkbs_after);
+                    n_kbs--;
+                    // don't skip the new i-th entry of kbs
+                    i--;
+                    continue;
+                }
+                struct resolver *r = &kbs[i].grab->resolver;
+                // print names of keypresses
+                if(runopts->verbose && ev.type == EV_KEY && ev.value == 1){
+                    fprintf(stdout,
+                        "recv %s press\n",
+                        get_input_name(ev.code)
+                    );
+                }else if(
+                    runopts->verbose && ev.type == EV_KEY && ev.value == 0
+                ){
+                    fprintf(stdout,
+                        "recv %s release\n",
+                        get_input_name(ev.code)
+                    );
+                }
+                // dedup inputs before inserting to unresolved
+                if(!resolve_dedup_input(r, ev)) continue;
+                // avoid overflow in unresolved
+                if(r->ur_len == URMAX){
+                    fprintf(stderr, "overflow!\n");
+                    exit(1);
+                }
+                r->unresolved[(r->ur_start + r->ur_len++) % URMAX] = ev;
+                while(resolve(r));
+            }
+        }
+
+        if(FD_ISSET(inot, &rd_fds)){
+            handle_inotify_events(
+                inot, kbs, &n_kbs, runopts->config->grabs, runopts->verbose
+            );
+        }
+    }
+
+    if(runopts->systemd){
+        sd_notify(0, "STOPPING=1");
+    }
+
+    for(int i = 0; i < n_kbs; i++){
+      close(kbs[i].fd);
+    }
+    close(inot);
+
+    return retval;
 }
 
 

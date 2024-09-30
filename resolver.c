@@ -34,57 +34,26 @@ static void maybe_invalidate_last_tap(struct resolver *r, int code){
     }
 }
 
-/* if two sources of a single key are present, send events according to the
-   logical OR of those keys.  Also drop EV_SYN events if we detect that no real
-   key events have been sent since the last EV_SYN event we sent. */
-void resolver_send_filtered(struct resolver *r, struct input_event ev){
-    if(ev.type == EV_KEY){
-        if(ev.code > KEY_MAX){
-            fprintf(stderr, "invalid ev.code in resolver_send_filtered: %d\n",
-                    ev.code);
+// returns bool ok
+bool resolve_dedup_input(struct resolver *r, struct input_event ev){
+    if(ev.type != EV_KEY) return true;
+    if(ev.code > KEY_MAX) return true;
+    if(ev.value == 0){
+        // ignore non-final release of a key
+        if(r->input_counts[ev.code] == 0){
+            fprintf(stderr,
+                "invalid key release of %s in resolve_dedup_input\n",
+                get_input_name(ev.code)
+            );
+            return false;
         }
-
-        // key release event
-        else if(ev.value == 0){
-            if(r->press_count_map[ev.code] < 1){
-                fprintf(stderr, "invalid key release of %s in "
-                        "resolver_send_filtered\n", get_input_name(ev.code));
-            }
-            // send event if this was the last key of this type released
-            else if(--r->press_count_map[ev.code] == 0){
-                r->send(r->send_data, ev);
-                r->sent_something = true;
-            }
-        }
-        // key press event
-        else if(ev.value == 1){
-            // send event if this was the first key of this type pressed
-            if(r->press_count_map[ev.code]++ == 0){
-                r->send(r->send_data, ev);
-                r->sent_something = true;
-            }
-        }
-        // key repeat event
-        else if(ev.value == 2){
-            r->send(r->send_data, ev);
-            r->sent_something = true;
-        }else{
-            fprintf(stderr, "dropping invalid ev.value %d in "
-                    "resolver_send_filtered\n", ev.value);
-        }
-
-    }else if(ev.type == EV_SYN){
-        // only send the EV_SYN event if some other event was sent
-        if(r->sent_something){
-            r->send(r->send_data, ev);
-            r->sent_something = false;
-        }
-
-    }else{
-        // other ev.types are passed through unchanged
-        r->send(r->send_data, ev);
-        r->sent_something = true;
+        return --r->input_counts[ev.code] == 0;
     }
+    if(ev.value == 1){
+        // ignore non-first press of a key;
+        return r->input_counts[ev.code]++ == 0;
+    }
+    return true;
 }
 
 /* Given a pressed dual-key X, check unresolved events to decide tap or hold.
@@ -168,7 +137,7 @@ void do_keypress(struct resolver *r, struct input_event ev, key_action_t *ka){
             r->release_map[ev.code] = ka->key.simple;
             // send the modified key
             ev.code = ka->key.simple;
-            resolver_send_filtered(r, ev);
+            r->send(r->send_data, ev);
             break;
         case KT_MACRO:
             // send the whole chain of macros
@@ -178,14 +147,14 @@ void do_keypress(struct resolver *r, struct input_event ev, key_action_t *ka){
                     .value = m->press,
                     .code = m->code,
                 };
-                resolver_send_filtered(r, ev);
+                r->send(r->send_data, ev);
 
                 struct input_event syn_ev = {
                     .type = EV_SYN,
                     .code = SYN_REPORT,
                     .value = 0,
                 };
-                resolver_send_filtered(r, syn_ev);
+                r->send(r->send_data, syn_ev);
             }
             break;
         case KT_MAP:
@@ -196,6 +165,59 @@ void do_keypress(struct resolver *r, struct input_event ev, key_action_t *ka){
             // send nothing
             break;
     }
+}
+
+bool resolve_press(struct resolver *r, struct input_event ev){
+    maybe_invalidate_last_tap(r, ev.code);
+    // get the key action from the map
+    key_action_t *ka = key_action_get(r->current_keymap, ev.code);
+    switch(ka->type){
+        case KT_MAP:
+        case KT_MACRO:
+        case KT_SIMPLE:
+            do_keypress(r, ev, ka);
+            return true;
+        case KT_DUAL:
+            switch(check_waveform(r, ev, ka->key.dual)){
+                // .tap and .hold must not be KT_DUALs
+                case WAVEFORM_TAP:
+                    do_keypress(r, ev, ka->key.dual.tap);
+                    return true;
+                case WAVEFORM_HOLD:
+                    do_keypress(r, ev, ka->key.dual.hold);
+                    return true;
+                case WAVEFORM_NONE_YET:
+                    // wait for a timeout to resolve this event
+                    r->resolvable_time = msec_after(
+                        ev.time, ka->key.dual.hold_ms
+                    );
+                    r->use_resolvable_time=true;
+                    return false;
+            }
+        case KT_NONE:
+        default:
+            fprintf(stderr, "invalid key action in resolver\n");
+            exit(1);
+    }
+}
+
+bool resolve_release(struct resolver *r, struct input_event ev){
+    /* make the code look like whatever we mapped it to when we
+       resolved the initial keypress */
+    int initial_code = ev.code;
+    ev.code = r->release_map[initial_code];
+    r->release_map[initial_code] = 0;
+    switch(ev.code){
+        case RESET_KEYMAP:
+            r->current_keymap = r->root_keymap;
+            break;
+        case 0:
+            // we must have sent this key release early; do nothing.
+            break;
+        default:
+            r->send(r->send_data, ev);
+    }
+    return true;
 }
 
 /* helper function which tries to resolve the oldest key event.  Returns false
@@ -221,58 +243,12 @@ bool resolve(struct resolver *r){
         // key released
         else if(ev.value == 0){
             // printf("%.10s of %.10s\n", "release", get_input_name(ev.code));
-            /* make the code look like whatever we mapped it to when we
-               resolved the initial keypress */
-            ev.code = r->release_map[ev.code];
-            r->release_map[ev.code] = 0;
-            switch(ev.code){
-                case RESET_KEYMAP:
-                    r->current_keymap = r->root_keymap;
-                    break;
-                case 0:
-                    // we must have sent this key release early; do nothing.
-                    break;
-                default:
-                    resolver_send_filtered(r, ev);
-            }
-            resolved = true;
+            resolved = resolve_release(r, ev);
         }
         // key pressed
         else if(ev.value == 1){
-            maybe_invalidate_last_tap(r, ev.code);
             // printf("%.10s of %.10s\n", "press", get_input_name(ev.code));
-            // get the key action from the map
-            key_action_t *ka = key_action_get(r->current_keymap, ev.code);
-            switch(ka->type){
-                case KT_MAP:
-                case KT_MACRO:
-                case KT_SIMPLE:
-                    do_keypress(r, ev, ka);
-                    resolved = true;
-                    break;
-                case KT_DUAL:
-                    switch(check_waveform(r, ev, ka->key.dual)){
-                        // .tap and .hold must not be KT_DUALs
-                        case WAVEFORM_TAP:
-                            do_keypress(r, ev, ka->key.dual.tap);
-                            resolved = true;
-                            break;
-                        case WAVEFORM_HOLD:
-                            do_keypress(r, ev, ka->key.dual.hold);
-                            resolved = true;
-                            break;
-                        case WAVEFORM_NONE_YET:
-                            // wait for a timeout to resolve this event
-                            r->resolvable_time = msec_after(ev.time, ka->key.dual.hold_ms);
-                            r->use_resolvable_time=true;
-                            break;
-                    }
-                    break;
-                case KT_NONE:
-                default:
-                    fprintf(stderr, "invalid key action in resolver\n");
-                    exit(1);
-            }
+            resolved = resolve_press(r, ev);
         }
         // key repeated
         else if(ev.value == 2){
@@ -286,21 +262,22 @@ bool resolve(struct resolver *r){
                          repeat is from the first press and which one is
                          irrelevant.  For now, X handles its own key repeats
                          so these don't really even matter. */
-                resolver_send_filtered(r, ev);
+                r->send(r->send_data, ev);
             }
             resolved = true;
         }else{
-            fprintf(stderr, "dropping invalid ev.value %d in resolver\n",
-                    ev.value);
+            fprintf(stderr,
+                "dropping invalid ev.value %d in resolver\n", ev.value
+            );
             resolved = true;
         }
     }else if(ev.type == EV_SYN){
         // printf("EV_SYN\n");
-        resolver_send_filtered(r, ev);
+        r->send(r->send_data, ev);
         resolved = true;
     }else{
         // other ev.types are passed through unchanged
-        resolver_send_filtered(r, ev);
+        r->send(r->send_data, ev);
         resolved = true;
     }
 
@@ -316,6 +293,7 @@ bool resolve(struct resolver *r){
            initial press had come after the unresolvable key, then now that
            we have the release the unresolvable key would be resolvable. */
         ev = r->unresolved[(r->ur_start + r->ur_len - 1) % URMAX];
+        // only proceed for the final release of a key
         if(ev.value == 0 && ev.code < KEY_MAX){
             /* make the code look like whatever we mapped it to when we
                resolved the initial keypress */
@@ -338,14 +316,14 @@ bool resolve(struct resolver *r){
                     // modifier keys don't get resolved early
                     break;
                 default:
-                    resolver_send_filtered(r, ev);
+                    r->send(r->send_data, ev);
                     // send a sync event for this generated key event
                     struct input_event syn_ev = {
                         .type = EV_SYN,
                         .code = SYN_REPORT,
                         .value = 0,
                     };
-                    resolver_send_filtered(r, syn_ev);
+                    r->send(r->send_data, syn_ev);
                     // one less element
                     r->ur_len--;
             }
