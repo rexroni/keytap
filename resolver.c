@@ -295,7 +295,6 @@ bool resolve(struct resolver *r){
            initial press had come after the unresolvable key, then now that
            we have the release the unresolvable key would be resolvable. */
         ev = r->unresolved[(r->ur_start + r->ur_len - 1) % URMAX];
-        // only proceed for the final release of a key
         if(ev.value == 0 && ev.code < KEY_MAX){
             /* make the code look like whatever we mapped it to when we
                resolved the initial keypress */
