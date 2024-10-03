@@ -95,6 +95,8 @@ enum waveform check_waveform(struct resolver *r, struct input_event ev,
     int keys_pressed[KEY_MAX] = {0};
     for(size_t i = 1; i < r->ur_len; i++){
         struct input_event ev2 = r->unresolved[(r->ur_start + i) % URMAX];
+        // only consider key events
+        if(ev2.type != EV_KEY) continue;
         // was the main key released?
         if(ev2.value == 0 && ev2.code == ev.code){
             track_last_tap(r, ev2);
